@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./css/loginStyle.css" />
+    <link rel="shortcut icon" href="./img/Track.svg" type="image/x-icon" sizes="16x16" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    
+    <title>Log In / Sign Up</title>
+</head>
+<body>
+
+    <div class="container">
+        <div class="logIn">
+    <img src="./img/main-logo.png" alt="logo">
+    <h1>Welcome Back</h1>
+    <span>Sign in to continue</span>
+    
+    <form id="login-form">
+        <div class="form-group">
+            <input type="email" id="email" class="form-control" placeholder="Enter Your Email" required>
+            <i class="fa-solid fa-user"></i>
+        </div>
+
+        <div class="form-group">
+            <input type="password" id="password" class="form-control" placeholder="Enter Your Password" required autocomplete="off">
+            <i class="fa-solid fa-lock"></i>
+        </div>
+
+        <div class="form-group remember-forgot">
+            <div class="remember">
+                <input type="checkbox" id="remember-me">
+                <label for="remember-me">Remember Me.</label>
+            </div>
+            <a href="./reset.html" id="reset">Forgot Your Password?</a>
+        </div>
+
+        <div class="logInBtn">
+            <button type="submit" id="login-btn">Log In</button>
+        </div>
+
+        <div class="signUpbtn">
+            <a href="./registration.html" id="registration"> Don't you have an account? Register Here</a>
+        </div>
+
+        <div class="google">
+            <button type="button" id="google-btn"> <i class="fa-brands fa-google"></i> Sign In with Google</button>
+        </div>
+    </form>
+</div>
+    </div>
+
+
+
+    <script src="./js/login.js" type="module"></script>
+    <script src="./js/firebase.js" type="module"></script>
+</body>
+</html>
