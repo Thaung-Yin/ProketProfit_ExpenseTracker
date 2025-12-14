@@ -18,6 +18,10 @@ body{
     place-items: center;
 }
 
+input, select, textarea {
+    font-size: 16px !important;
+}
+
 .container{
     width: 400px;
     border-radius: 20px;
@@ -157,6 +161,12 @@ form .form-group{
         width: 150px;
     }
     
+}
+
+@media screen and (min-width: 768px) {
+    input, select, textarea {
+        font-size: 14px !important;
+    }
 }
 
             
