@@ -2,9 +2,9 @@
 // 1. IMPORTS
 // ==========================================
 import { auth, db } from "./firebase.js"; 
-import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
+import { onAuthStateChanged, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
 import { 
-    collection, addDoc, deleteDoc, doc, getDoc,updateDoc, arrayUnion, setDoc, 
+    collection, addDoc, deleteDoc, doc, getDoc, updateDoc, arrayUnion, setDoc, 
     onSnapshot, query, orderBy, serverTimestamp 
 } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
@@ -15,6 +15,7 @@ let userProfile = { name: 'Loading...', id: '...' };
 let dbData = { transactions: [], groups: [] };
 let txType = 'expense';
 let selBank = 'Cash';
+let selCategory = 'Other'; // Default category
 let activeGroupId = null;
 let currentUser = null;
 
@@ -39,31 +40,35 @@ const banks = [
     { name: 'MCB', icon: 'fa-building', color: 'bg-blue-300', text: 'text-gray-800' }
 ];
 
-// ==========================================
-// 3. INITIALIZATION & SELF-HEALING
-// ==========================================
+const categories = [
+    { name: 'Food', icon: 'fa-utensils', color: 'bg-orange-100', text: 'text-orange-600' },
+    { name: 'Transport', icon: 'fa-bus', color: 'bg-blue-100', text: 'text-blue-600' },
+    { name: 'Shopping', icon: 'fa-bag-shopping', color: 'bg-pink-100', text: 'text-pink-600' },
+    { name: 'Bills', icon: 'fa-file-invoice-dollar', color: 'bg-purple-100', text: 'text-purple-600' },
+    { name: 'Entertainment', icon: 'fa-film', color: 'bg-yellow-100', text: 'text-yellow-600' },
+    { name: 'Health', icon: 'fa-heart-pulse', color: 'bg-red-100', text: 'text-red-600' },
+    { name: 'Education', icon: 'fa-graduation-cap', color: 'bg-indigo-100', text: 'text-indigo-600' },
+    { name: 'Other', icon: 'fa-ellipsis', color: 'bg-gray-200', text: 'text-gray-600' }
+];
+
 window.onload = () => {
     onAuthStateChanged(auth, async (user) => {
         if (user) {
             currentUser = user;
             
             try {
-                // Check if User Profile exists in Database
                 const docRef = doc(db, "users", user.uid);
                 const docSnap = await getDoc(docRef);
 
                 if (docSnap.exists()) {
-                    // --- PROFILE EXISTS ---
                     const data = docSnap.data();
                     userProfile.name = data.fullname || user.displayName;
                     userProfile.id = data.shareID || "No ID";
                 } else {
-                    // --- PROFILE MISSING (SELF-HEAL) ---
                     console.warn("Profile missing. Generating new ID...");
                     const shareID = Math.floor(100000 + Math.random() * 900000).toString();
                     const newName = user.displayName || user.email.split('@')[0];
 
-                    // Create the missing document now
                     await setDoc(docRef, {
                         fullname: newName,
                         email: user.email,
@@ -72,7 +77,6 @@ window.onload = () => {
                         createdAt: new Date()
                     });
 
-                    // Update local state immediately
                     userProfile.name = newName;
                     userProfile.id = shareID;
                 }
@@ -84,6 +88,7 @@ window.onload = () => {
             initRealTimeListeners();
             router('dashboard');
             renderBankScroll();
+            renderCategoryScroll(); 
 
         } else {
             window.location.href = "./index.html";
@@ -107,11 +112,10 @@ function initRealTimeListeners() {
     });
 }
 
-// ==========================================
-// 4. WINDOW EXPORTS
-// ==========================================
+// Window Assignments
 window.router = router;
 window.selectBank = selectBank;
+window.selectCategory = selectCategory;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.setTxType = setTxType;
@@ -124,6 +128,8 @@ window.openGroupDetail = openGroupDetail;
 window.closeGroupDetail = closeGroupDetail;
 window.addMember = addMember;
 window.saveProfile = saveProfile;
+window.togglePasswordForm = togglePasswordForm;
+window.changeUserPassword = changeUserPassword;
 window.logout = logout;
 window.applyFilters = applyFilters;
 window.downloadCSV = downloadCSV;
@@ -147,14 +153,29 @@ async function saveTx() {
     const isGrp = document.getElementById('inp-is-group').checked;
     const grpId = isGrp ? document.getElementById('inp-group-select').value : null;
     
-    if(!amt || !desc) { showAlert("Please fill in Amount and Note."); return; }
+    // Validation
+    if(!amt) { showAlert("Please fill in Amount."); return; }
+    
+    // If "Other" is selected, require a note. Otherwise, category name is enough if note is empty.
+    let finalDesc = desc;
+    if (txType === 'expense' && !desc) {
+        if(selCategory === 'Other') {
+             showAlert("Please add a Note for 'Other' category."); 
+             return; 
+        }
+        finalDesc = selCategory; // Default description to category name
+    } else if (!desc) {
+        showAlert("Please fill in Note.");
+        return;
+    }
 
     try {
         await addDoc(collection(db, "transactions"), {
             type: txType,
             amount: parseFloat(amt),
             bank: selBank,
-            desc: desc,
+            category: txType === 'expense' ? selCategory : 'Income', // Save category
+            desc: finalDesc,
             date: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
             groupId: grpId,
@@ -167,6 +188,65 @@ async function saveTx() {
     } catch (e) {
         console.error("Error adding doc: ", e);
         showAlert("Error: " + e.message);
+    }
+}
+
+function togglePasswordForm() {
+    const form = document.getElementById('password-form-container');
+    const btn = document.getElementById('btn-toggle-pw');
+    
+    if (form.classList.contains('hidden')) {
+        form.classList.remove('hidden');
+        btn.classList.add('hidden');
+    } else {
+        form.classList.add('hidden');
+        btn.classList.remove('hidden');
+        // Clear inputs when cancelling/closing
+        document.getElementById('old-password').value = '';
+        document.getElementById('new-password').value = '';
+        document.getElementById('verify-password').value = '';
+    }
+}
+
+async function changeUserPassword() {
+    const oldPass = document.getElementById('old-password').value;
+    const newPass = document.getElementById('new-password').value;
+    const verifyPass = document.getElementById('verify-password').value;
+
+    if (!oldPass || !newPass || !verifyPass) {
+        showAlert("Please fill in all password fields.");
+        return;
+    }
+
+    if (newPass !== verifyPass) {
+        showAlert("New passwords do not match.");
+        return;
+    }
+
+    if (newPass.length < 6) {
+        showAlert("Password must be at least 6 characters.");
+        return;
+    }
+
+    try {
+        // 1. Re-authenticate
+        const credential = EmailAuthProvider.credential(currentUser.email, oldPass);
+        await reauthenticateWithCredential(currentUser, credential);
+        
+        // 2. Update Password
+        await updatePassword(currentUser, newPass);
+        
+        // 3. Cleanup UI (Reset view)
+        showSuccess("Password Updated Successfully!");
+        togglePasswordForm(); // Closes form and shows button again
+        
+    } catch (error) {
+        console.error("Error updating password:", error);
+        if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
+            showAlert("Incorrect old password.");
+        } else {
+            showAlert("Error: " + error.message);
+        }
     }
 }
 
@@ -255,9 +335,17 @@ function renderDashboard() {
     if(dbData.transactions && dbData.transactions.length > 0) {
         const sorted = [...dbData.transactions].sort((a,b) => new Date(b.date) - new Date(a.date));
         sorted.slice(0,5).forEach(t => {
-            tbody.innerHTML += `<tr class="hover:bg-gray-50 transition border-b border-gray-50 last:border-0"><td class="p-4 font-bold text-gray-700 text-sm">${t.desc}</td><td class="p-4"><span class="bg-gray-100 text-[10px] px-2 py-1 rounded text-gray-500 whitespace-nowrap">${t.bank}</span></td><td class="p-4 text-xs text-gray-400 whitespace-nowrap">${t.date}</td><td class="p-4 text-right font-bold text-sm ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</td></tr>`;
+            // Find category style if available, else default
+            const catObj = categories.find(c => c.name === t.category) || { color: 'bg-gray-100', text: 'text-gray-500' };
+            const catBadge = t.type === 'income' 
+                ? `<span class="bg-green-100 text-green-600 text-[10px] px-2 py-1 rounded font-bold">INCOME</span>`
+                : `<span class="${catObj.color} ${catObj.text} text-[10px] px-2 py-1 rounded font-bold flex items-center gap-1 w-fit"><i class="fa-solid ${catObj.icon} text-[9px]"></i>${t.category || 'Expense'}</span>`;
+            
+            tbody.innerHTML += `<tr class="hover:bg-gray-50 transition border-b border-gray-50 last:border-0"><td class="p-4 font-bold text-gray-700 text-sm">${t.desc}</td><td class="p-4">${catBadge}</td><td class="p-4 text-xs text-gray-400 whitespace-nowrap">${t.date}</td><td class="p-4 text-right font-bold text-sm ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</td></tr>`;
         });
     } else { tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400 text-xs">No transactions found</td></tr>'; }
+    
+    // Updated Chart Rendering
     renderChart(inc, exp);
 }
 
@@ -274,18 +362,131 @@ function renderLists() {
         filtered.sort((a,b) => new Date(b.date) - new Date(a.date)).forEach(t => {
             const grpName = t.groupId ? dbData.groups.find(g => g.id === t.groupId)?.name : null;
             const groupBadge = grpName ? `<div class="text-[10px] bg-brand/10 text-brand px-2 py-1 rounded mt-1 w-fit"><i class="fa-solid fa-users mr-1"></i>${grpName}</div>` : ''; 
-            list.innerHTML += `<div class="flex justify-between items-center p-4 bg-white rounded-2xl border border-gray-100 shadow-sm group"><div class="flex items-center gap-4"><div class="w-10 h-10 rounded-full ${type==='income'?'bg-green-100 text-green-600':'bg-red-100 text-red-600'} flex items-center justify-center"><i class="fa-solid ${type==='income'?'fa-arrow-down':'fa-arrow-up'}"></i></div><div><p class="font-bold text-gray-800">${t.desc}</p><p class="text-xs text-gray-400">${t.date} • ${t.bank}</p>${groupBadge}</div></div><div class="flex items-center gap-3"><span class="font-bold ${type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span><button onclick="deleteTx('${t.id}')" class="w-8 h-8 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition"><i class="fa-solid fa-trash text-xs"></i></button></div></div>`;
+            
+            // Icon logic based on category
+            let iconClass = type === 'income' ? 'fa-arrow-down' : 'fa-arrow-up';
+            let bgClass = type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600';
+            
+            if (type === 'expense' && t.category) {
+                 const cat = categories.find(c => c.name === t.category);
+                 if(cat) {
+                     iconClass = cat.icon;
+                     bgClass = cat.color + ' ' + cat.text;
+                 }
+            }
+
+            list.innerHTML += `<div class="flex justify-between items-center p-4 bg-white rounded-2xl border border-gray-100 shadow-sm group"><div class="flex items-center gap-4"><div class="w-10 h-10 rounded-full ${bgClass} flex items-center justify-center"><i class="fa-solid ${iconClass}"></i></div><div><p class="font-bold text-gray-800">${t.desc}</p><p class="text-xs text-gray-400">${t.date} • ${t.bank}</p>${groupBadge}</div></div><div class="flex items-center gap-3"><span class="font-bold ${type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span><button onclick="deleteTx('${t.id}')" class="w-8 h-8 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition"><i class="fa-solid fa-trash text-xs"></i></button></div></div>`;
         });
     });
 }
 
+// ==========================================
+// Chart Logic: Category Breakdown
+// ==========================================
 function renderChart(inc, exp) {
     const ctx = document.getElementById('mainChart').getContext('2d');
     if(window.myChart) window.myChart.destroy();
-    let data = [inc, exp];
-    let colors = ['#27386d', '#ef4444'];
-    if(inc === 0 && exp === 0) { data = [1]; colors = ['#e5e7eb']; }
-    window.myChart = new Chart(ctx, { type: 'doughnut', data: { labels: ['Saved', 'Spent'], datasets: [{ data: data, backgroundColor: colors, borderWidth: 0 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '75%', plugins: { legend: { display: false } } } });
+
+    // Strategy: If there are expenses, show Expense Category Breakdown.
+    // If no expenses, show Income vs Expense (or just empty state).
+    
+    let labels = [];
+    let dataPoints = [];
+    let bgColors = [];
+
+    // Filter expenses
+    const expenseTxs = dbData.transactions.filter(t => t.type === 'expense');
+
+    if (expenseTxs.length > 0) {
+        // Group by Category
+        const catMap = {};
+        expenseTxs.forEach(t => {
+            const cat = t.category || 'Other';
+            if(!catMap[cat]) catMap[cat] = 0;
+            catMap[cat] += t.amount;
+        });
+
+        // Convert to arrays
+        labels = Object.keys(catMap);
+        dataPoints = Object.values(catMap);
+        
+        // Map colors
+        bgColors = labels.map(l => {
+            // Tailwind colors to Hex map for ChartJS
+            const cObj = categories.find(c => c.name === l);
+            if(!cObj) return '#9ca3af'; // gray default
+            // Simple mapping based on the tailwind class names in config
+            if(cObj.name === 'Food') return '#fb923c'; // orange
+            if(cObj.name === 'Transport') return '#3b82f6'; // blue
+            if(cObj.name === 'Shopping') return '#ec4899'; // pink
+            if(cObj.name === 'Bills') return '#a855f7'; // purple
+            if(cObj.name === 'Entertainment') return '#eab308'; // yellow
+            if(cObj.name === 'Health') return '#ef4444'; // red
+            if(cObj.name === 'Education') return '#6366f1'; // indigo
+            return '#9ca3af';
+        });
+
+    } else {
+        // Fallback: Income vs Expense if no specific expense data
+        labels = ['Income', 'Expense'];
+        dataPoints = [inc, exp];
+        bgColors = ['#22c55e', '#ef4444'];
+        if(inc === 0 && exp === 0) { dataPoints = [1]; bgColors = ['#e5e7eb']; labels =['No Data']; }
+    }
+
+    window.myChart = new Chart(ctx, { 
+        type: 'doughnut', 
+        data: { 
+            labels: labels, 
+            datasets: [{ 
+                data: dataPoints, 
+                backgroundColor: bgColors, 
+                borderWidth: 0 
+            }] 
+        }, 
+        options: { 
+            responsive: true, 
+            maintainAspectRatio: false, 
+            cutout: '70%', 
+            plugins: { 
+                legend: { 
+                    position: 'right',
+                    labels: { boxWidth: 10, font: { size: 10 } }
+                } 
+            } 
+        } 
+    });
+}
+
+// ==========================================
+// Category & Input Rendering
+// ==========================================
+function renderCategoryScroll() {
+    const container = document.getElementById('category-scroll');
+    if(!container) return;
+    container.innerHTML = '';
+    categories.forEach(c => {
+        const isSelected = selCategory === c.name;
+        container.innerHTML += `
+            <div onclick="selectCategory('${c.name}')" class="flex flex-col items-center p-2 rounded-xl border cursor-pointer transition ${isSelected ? 'border-brand bg-brand/5 ring-1 ring-brand' : 'border-gray-100 bg-white hover:bg-gray-50'}">
+                <div class="w-8 h-8 rounded-full ${c.color} ${c.text} flex items-center justify-center mb-1">
+                    <i class="fa-solid ${c.icon} text-xs"></i>
+                </div>
+                <span class="text-[9px] font-bold text-gray-600">${c.name}</span>
+            </div>
+        `;
+    });
+}
+
+function selectCategory(name) {
+    selCategory = name;
+    renderCategoryScroll();
+    
+    // UX: If user selects a category, maybe clear note if it was just a previous category name? 
+    // For now, we leave the note as is, or focus it if it's "Other".
+    if(name === 'Other') {
+        document.getElementById('inp-desc').focus();
+    }
 }
 
 function renderBankScroll() {
@@ -298,21 +499,38 @@ function renderBankScroll() {
 }
 
 function selectBank(name, el) { selBank = name; renderBankScroll(); }
+
 function setTxType(type) {
     txType = type;
     const bIn = document.getElementById('btn-tx-income');
     const bEx = document.getElementById('btn-tx-expense');
-    if(type === 'expense') { bEx.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-brand font-bold text-xs transition-all"; bIn.className = "flex-1 py-2 rounded-lg text-gray-500 font-bold text-xs transition-all"; }
-    else { bIn.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-brand font-bold text-xs transition-all"; bEx.className = "flex-1 py-2 rounded-lg text-gray-500 font-bold text-xs transition-all"; }
+    const catSection = document.getElementById('category-section');
+    
+    if(type === 'expense') { 
+        bEx.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-brand font-bold text-xs transition-all"; 
+        bIn.className = "flex-1 py-2 rounded-lg text-gray-500 font-bold text-xs transition-all"; 
+        if(catSection) catSection.classList.remove('hidden');
+    } else { 
+        bIn.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-brand font-bold text-xs transition-all"; 
+        bEx.className = "flex-1 py-2 rounded-lg text-gray-500 font-bold text-xs transition-all";
+        if(catSection) catSection.classList.add('hidden');
+    }
 }
+
 function toggleGroupSelect() { 
     const isChecked = document.getElementById('inp-is-group').checked;
     const selectBox = document.getElementById('inp-group-select');
     isChecked ? selectBox.classList.remove('hidden') : selectBox.classList.add('hidden');
 }
+
 function openModal() {
     document.getElementById('tx-modal').classList.remove('hidden');
     renderBankScroll();
+    renderCategoryScroll(); // Ensure categories render
+    // Reset category to default on open
+    selCategory = 'Other'; 
+    renderCategoryScroll();
+
     const grpCont = document.getElementById('group-option-container');
     const sel = document.getElementById('inp-group-select');
     if(dbData.groups && dbData.groups.length > 0) {
@@ -384,39 +602,24 @@ function closeGroupDetail() {
     document.getElementById('group-list-view').classList.remove('hidden');
     renderGroupList(); 
 }
-// ADD THIS NEW VERSION
+
 async function addMember() {
     const inputEl = document.getElementById('add-member-input');
     const newMember = inputEl.value.trim();
     
-    // 1. Validation
     if (!newMember) {
         showAlert("Please enter a name or ID.");
         return;
     }
-
     if (!activeGroupId) {
         showAlert("Error: No active group found.");
         return;
     }
-
     try {
-        // 2. Reference the specific Group Document
         const groupRef = doc(db, "groups", activeGroupId);
-        
-        // 3. Update the 'members' array in Firestore
-        // arrayUnion ensures we don't add duplicates
-        await updateDoc(groupRef, {
-            members: arrayUnion(newMember)
-        });
-
-        // 4. Success UI
+        await updateDoc(groupRef, { members: arrayUnion(newMember) });
         showSuccess("Member Added!");
-        inputEl.value = ''; // Clear the input box
-        
-        // Note: We don't need to manually refresh the list because 
-        // your onSnapshot listener will detect the change automatically.
-
+        inputEl.value = ''; 
     } catch (e) {
         console.error("Error adding member:", e);
         showAlert("Failed to add member: " + e.message);
@@ -449,8 +652,8 @@ function applyFilters() {
 }
 function downloadCSV() {
     if(!dbData.transactions || dbData.transactions.length === 0) { showAlert("No data."); return; }
-    let csv = "Date,Type,Description,Bank,Group,Amount\n";
-    dbData.transactions.forEach(t => { csv += `${t.date},${t.type},${t.desc},${t.bank},${t.groupId||''},${t.amount}\n`; });
+    let csv = "Date,Type,Category,Description,Bank,Group,Amount\n";
+    dbData.transactions.forEach(t => { csv += `${t.date},${t.type},${t.category || ''},${t.desc},${t.bank},${t.groupId||''},${t.amount}\n`; });
     const link = document.createElement("a");
     link.href = "data:text/csv;charset=utf-8," + encodeURI(csv);
     link.download = "proket_data.csv";
