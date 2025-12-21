@@ -15,7 +15,7 @@ let userProfile = { name: 'Loading...', id: '...' };
 let dbData = { transactions: [], groups: [] };
 let txType = 'expense';
 let selBank = 'Cash';
-let selCategory = 'Other'; // Default category
+let selCategory = 'Other'; 
 let activeGroupId = null;
 let currentUser = null;
 
@@ -156,14 +156,13 @@ async function saveTx() {
     // Validation
     if(!amt) { showAlert("Please fill in Amount."); return; }
     
-    // If "Other" is selected, require a note. Otherwise, category name is enough if note is empty.
     let finalDesc = desc;
     if (txType === 'expense' && !desc) {
         if(selCategory === 'Other') {
              showAlert("Please add a Note for 'Other' category."); 
              return; 
         }
-        finalDesc = selCategory; // Default description to category name
+        finalDesc = selCategory; 
     } else if (!desc) {
         showAlert("Please fill in Note.");
         return;
@@ -174,7 +173,7 @@ async function saveTx() {
             type: txType,
             amount: parseFloat(amt),
             bank: selBank,
-            category: txType === 'expense' ? selCategory : 'Income', // Save category
+            category: txType === 'expense' ? selCategory : 'Income', 
             desc: finalDesc,
             date: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
@@ -191,6 +190,36 @@ async function saveTx() {
     }
 }
 
+// ---------------------------------------------------------
+// UPDATED PROFILE FUNCTION
+// ---------------------------------------------------------
+async function saveProfile() {
+    const newName = document.getElementById('settings-fullname').value.trim();
+
+    if (!newName) {
+        showAlert("Name cannot be empty.");
+        return;
+    }
+
+    try {
+        // 1. Update Database
+        const userRef = doc(db, "users", currentUser.uid);
+        await updateDoc(userRef, {
+            fullname: newName
+        });
+
+        // 2. Update Local State & UI
+        userProfile.name = newName;
+        updateProfileUI();
+
+        showSuccess("Profile Updated!");
+    } catch (e) {
+        console.error("Error updating profile:", e);
+        showAlert("Failed to update profile.");
+    }
+}
+// ---------------------------------------------------------
+
 function togglePasswordForm() {
     const form = document.getElementById('password-form-container');
     const btn = document.getElementById('btn-toggle-pw');
@@ -201,7 +230,6 @@ function togglePasswordForm() {
     } else {
         form.classList.add('hidden');
         btn.classList.remove('hidden');
-        // Clear inputs when cancelling/closing
         document.getElementById('old-password').value = '';
         document.getElementById('new-password').value = '';
         document.getElementById('verify-password').value = '';
@@ -229,17 +257,11 @@ async function changeUserPassword() {
     }
 
     try {
-        // 1. Re-authenticate
         const credential = EmailAuthProvider.credential(currentUser.email, oldPass);
         await reauthenticateWithCredential(currentUser, credential);
-        
-        // 2. Update Password
         await updatePassword(currentUser, newPass);
-        
-        // 3. Cleanup UI (Reset view)
         showSuccess("Password Updated Successfully!");
-        togglePasswordForm(); // Closes form and shows button again
-        
+        togglePasswordForm(); 
     } catch (error) {
         console.error("Error updating password:", error);
         if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
@@ -282,9 +304,6 @@ async function deleteGroup(id) {
     try { await deleteDoc(doc(db, "groups", id)); closeGroupDetail(); showSuccess("Group Deleted"); } catch (e) { showAlert("Failed to delete."); }
 }
 
-// ==========================================
-// 6. ROUTING & UI RENDERERS
-// ==========================================
 function router(page) {
     document.querySelectorAll('.view-section').forEach(el => { el.classList.remove('block'); el.classList.add('hidden'); });
     const target = document.getElementById('view-' + page);
@@ -335,7 +354,6 @@ function renderDashboard() {
     if(dbData.transactions && dbData.transactions.length > 0) {
         const sorted = [...dbData.transactions].sort((a,b) => new Date(b.date) - new Date(a.date));
         sorted.slice(0,5).forEach(t => {
-            // Find category style if available, else default
             const catObj = categories.find(c => c.name === t.category) || { color: 'bg-gray-100', text: 'text-gray-500' };
             const catBadge = t.type === 'income' 
                 ? `<span class="bg-green-100 text-green-600 text-[10px] px-2 py-1 rounded font-bold">INCOME</span>`
@@ -345,7 +363,6 @@ function renderDashboard() {
         });
     } else { tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400 text-xs">No transactions found</td></tr>'; }
     
-    // Updated Chart Rendering
     renderChart(inc, exp);
 }
 
@@ -363,7 +380,6 @@ function renderLists() {
             const grpName = t.groupId ? dbData.groups.find(g => g.id === t.groupId)?.name : null;
             const groupBadge = grpName ? `<div class="text-[10px] bg-brand/10 text-brand px-2 py-1 rounded mt-1 w-fit"><i class="fa-solid fa-users mr-1"></i>${grpName}</div>` : ''; 
             
-            // Icon logic based on category
             let iconClass = type === 'income' ? 'fa-arrow-down' : 'fa-arrow-up';
             let bgClass = type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600';
             
@@ -380,25 +396,16 @@ function renderLists() {
     });
 }
 
-// ==========================================
-// Chart Logic: Category Breakdown
-// ==========================================
 function renderChart(inc, exp) {
     const ctx = document.getElementById('mainChart').getContext('2d');
     if(window.myChart) window.myChart.destroy();
-
-    // Strategy: If there are expenses, show Expense Category Breakdown.
-    // If no expenses, show Income vs Expense (or just empty state).
-    
     let labels = [];
     let dataPoints = [];
     let bgColors = [];
 
-    // Filter expenses
     const expenseTxs = dbData.transactions.filter(t => t.type === 'expense');
 
     if (expenseTxs.length > 0) {
-        // Group by Category
         const catMap = {};
         expenseTxs.forEach(t => {
             const cat = t.category || 'Other';
@@ -406,28 +413,23 @@ function renderChart(inc, exp) {
             catMap[cat] += t.amount;
         });
 
-        // Convert to arrays
         labels = Object.keys(catMap);
         dataPoints = Object.values(catMap);
         
-        // Map colors
         bgColors = labels.map(l => {
-            // Tailwind colors to Hex map for ChartJS
             const cObj = categories.find(c => c.name === l);
-            if(!cObj) return '#9ca3af'; // gray default
-            // Simple mapping based on the tailwind class names in config
-            if(cObj.name === 'Food') return '#fb923c'; // orange
-            if(cObj.name === 'Transport') return '#3b82f6'; // blue
-            if(cObj.name === 'Shopping') return '#ec4899'; // pink
-            if(cObj.name === 'Bills') return '#a855f7'; // purple
-            if(cObj.name === 'Entertainment') return '#eab308'; // yellow
-            if(cObj.name === 'Health') return '#ef4444'; // red
-            if(cObj.name === 'Education') return '#6366f1'; // indigo
+            if(!cObj) return '#9ca3af'; 
+            if(cObj.name === 'Food') return '#fb923c'; 
+            if(cObj.name === 'Transport') return '#3b82f6'; 
+            if(cObj.name === 'Shopping') return '#ec4899'; 
+            if(cObj.name === 'Bills') return '#a855f7'; 
+            if(cObj.name === 'Entertainment') return '#eab308'; 
+            if(cObj.name === 'Health') return '#ef4444'; 
+            if(cObj.name === 'Education') return '#6366f1'; 
             return '#9ca3af';
         });
 
     } else {
-        // Fallback: Income vs Expense if no specific expense data
         labels = ['Income', 'Expense'];
         dataPoints = [inc, exp];
         bgColors = ['#22c55e', '#ef4444'];
@@ -458,9 +460,6 @@ function renderChart(inc, exp) {
     });
 }
 
-// ==========================================
-// Category & Input Rendering
-// ==========================================
 function renderCategoryScroll() {
     const container = document.getElementById('category-scroll');
     if(!container) return;
@@ -481,9 +480,6 @@ function renderCategoryScroll() {
 function selectCategory(name) {
     selCategory = name;
     renderCategoryScroll();
-    
-    // UX: If user selects a category, maybe clear note if it was just a previous category name? 
-    // For now, we leave the note as is, or focus it if it's "Other".
     if(name === 'Other') {
         document.getElementById('inp-desc').focus();
     }
@@ -526,8 +522,7 @@ function toggleGroupSelect() {
 function openModal() {
     document.getElementById('tx-modal').classList.remove('hidden');
     renderBankScroll();
-    renderCategoryScroll(); // Ensure categories render
-    // Reset category to default on open
+    renderCategoryScroll(); 
     selCategory = 'Other'; 
     renderCategoryScroll();
 
@@ -568,7 +563,6 @@ function openGroupDetail(id) {
     document.getElementById('detail-group-name').innerText = g.name;
     document.getElementById('detail-group-id').innerText = g.id.slice(0,6);
     
-    // Header Delete Button
     let btnContainer = document.querySelector('#group-detail-view .bg-brand');
     let existingBtn = document.getElementById('btn-delete-group');
     if(existingBtn) existingBtn.remove();
@@ -625,7 +619,6 @@ async function addMember() {
         showAlert("Failed to add member: " + e.message);
     }
 }
-function saveProfile() { userProfile.name = document.getElementById('settings-fullname').value; updateProfileUI(); showSuccess("Profile Updated!"); }
 function updateProfileUI() {
     const url = `https://ui-avatars.com/api/?name=${userProfile.name}&background=27386d&color=fff`;
     document.getElementById('header-avatar').src = url;
