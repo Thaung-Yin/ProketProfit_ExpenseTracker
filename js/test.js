@@ -5,7 +5,7 @@ import { auth, db } from "./firebase.js";
 import { onAuthStateChanged, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
 import { 
     collection, addDoc, deleteDoc, doc, getDoc, updateDoc, arrayUnion, setDoc, 
-    onSnapshot, query, orderBy, serverTimestamp 
+    onSnapshot, query, orderBy, serverTimestamp, where // <--- Added 'where'
 } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
 // ==========================================
@@ -74,21 +74,21 @@ window.onload = () => {
                         email: user.email,
                         uid: user.uid,
                         shareID: shareID,
-                        createdAt: new Date()
+                        createdAt: new Date(),
+                        role: 'user' // Default role
                     });
 
                     userProfile.name = newName;
                     userProfile.id = shareID;
                 }
                 updateProfileUI();
+                initRealTimeListeners(); // Start listeners AFTER profile is loaded
+                router('dashboard');
+                renderBankScroll();
+                renderCategoryScroll(); 
             } catch (e) {
                 console.error("Error fetching/creating profile:", e);
             }
-
-            initRealTimeListeners();
-            router('dashboard');
-            renderBankScroll();
-            renderCategoryScroll(); 
 
         } else {
             window.location.href = "./index.html";
@@ -96,15 +96,32 @@ window.onload = () => {
     });
 };
 
+// ==========================================
+// UPDATED LISTENERS (PRIVACY FIX)
+// ==========================================
 function initRealTimeListeners() {
-    const qTx = query(collection(db, "transactions"), orderBy("date", "desc"));
+    // 1. Transactions: Only show where userId matches current user
+    // NOTE: This requires a Firestore Composite Index (userId + date). Check Console for link!
+    const qTx = query(
+        collection(db, "transactions"), 
+        where("userId", "==", currentUser.uid), 
+        orderBy("date", "desc")
+    );
+
     onSnapshot(qTx, (snapshot) => {
         dbData.transactions = [];
         snapshot.forEach((doc) => { dbData.transactions.push({ id: doc.id, ...doc.data() }); });
         refreshUI(); 
+    }, (error) => {
+        console.error("Tx Listener Error (Did you create the index?):", error);
     });
 
-    const qGroups = query(collection(db, "groups"));
+    // 2. Groups: Only show groups where 'members' array contains my name
+    const qGroups = query(
+        collection(db, "groups"),
+        where("members", "array-contains", userProfile.name)
+    );
+
     onSnapshot(qGroups, (snapshot) => {
         dbData.groups = [];
         snapshot.forEach((doc) => { dbData.groups.push({ id: doc.id, ...doc.data() }); });
@@ -178,7 +195,7 @@ async function saveTx() {
             date: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
             groupId: grpId,
-            userId: currentUser.uid
+            userId: currentUser.uid // Stores ID so filter works
         });
         closeModal();
         document.getElementById('inp-amount').value = '';
@@ -191,7 +208,7 @@ async function saveTx() {
 }
 
 // ---------------------------------------------------------
-// UPDATED PROFILE FUNCTION
+// PROFILE & AUTH FUNCTIONS
 // ---------------------------------------------------------
 async function saveProfile() {
     const newName = document.getElementById('settings-fullname').value.trim();
@@ -213,12 +230,13 @@ async function saveProfile() {
         updateProfileUI();
 
         showSuccess("Profile Updated!");
+        // Note: For groups to update with new name, we'd need more complex logic. 
+        // For now, groups keep the old name.
     } catch (e) {
         console.error("Error updating profile:", e);
         showAlert("Failed to update profile.");
     }
 }
-// ---------------------------------------------------------
 
 function togglePasswordForm() {
     const form = document.getElementById('password-form-container');
