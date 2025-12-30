@@ -241,6 +241,70 @@ async function saveBudget() {
         showAlert("Failed to save budget.");
     }
 }
+
+// ------------------------------------
+// UPDATED BUDGET LOGIC (Handles User & Group)
+// ------------------------------------
+let budgetMode = 'user'; // 'user' or 'group'
+
+function openBudgetModal(mode) {
+    budgetMode = mode;
+    const modalTitle = document.getElementById('budget-modal-title');
+    const input = document.getElementById('inp-budget-edit');
+    const modal = document.getElementById('budget-modal');
+
+    if (mode === 'user') {
+        modalTitle.innerText = "Set Monthly Budget";
+        input.value = userProfile.budget || '';
+    } else {
+        // Group Mode
+        const g = dbData.groups.find(x => x.id === activeGroupId);
+        if (!g) return;
+        modalTitle.innerText = `Budget for ${g.name}`;
+        input.value = g.monthlyBudget || '';
+    }
+    
+    modal.classList.remove('hidden');
+    input.focus();
+}
+
+function closeBudgetModal() {
+    document.getElementById('budget-modal').classList.add('hidden');
+}
+
+async function saveBudget() {
+    const val = document.getElementById('inp-budget-edit').value;
+    const newBudget = val ? parseFloat(val) : 0;
+    const modal = document.getElementById('budget-modal');
+
+    try {
+        if (budgetMode === 'user') {
+            // Save to User Profile
+            const userRef = doc(db, "users", currentUser.uid);
+            await updateDoc(userRef, { monthlyBudget: newBudget });
+            userProfile.budget = newBudget;
+            renderDashboard(); 
+            showSuccess("Personal Budget Updated!");
+        } else {
+            // Save to Group
+            if (!activeGroupId) return;
+            const groupRef = doc(db, "groups", activeGroupId);
+            await updateDoc(groupRef, { monthlyBudget: newBudget });
+            
+            // Update local data immediately for UI refresh
+            const gIndex = dbData.groups.findIndex(x => x.id === activeGroupId);
+            if(gIndex !== -1) dbData.groups[gIndex].monthlyBudget = newBudget;
+            
+            openGroupDetail(activeGroupId); // Refresh Group View
+            showSuccess("Group Budget Updated!");
+        }
+        closeBudgetModal();
+    } catch(e) {
+        console.error(e);
+        showAlert("Failed to save budget.");
+    }
+}
+// ------------------------------------
 // ------------------------------------
 
 async function saveProfile() {
