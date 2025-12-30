@@ -101,6 +101,7 @@ window.onload = () => {
                 if(loader) loader.classList.add('hidden');
             }
         } else {
+            // Not logged in, redirect to login page
             window.location.href = "./index.html";
         }
     });
@@ -140,6 +141,7 @@ function initRealTimeListeners() {
 // ==========================================
 // 4. GLOBAL ASSIGNMENTS
 // ==========================================
+// IMPORTANT: We map the window function to our renamed function below
 window.router = router;
 window.selectBank = selectBank;
 window.selectCategory = selectCategory;
@@ -165,7 +167,7 @@ window.showSuccess = showSuccess;
 window.showAlert = showAlert;
 window.deleteTx = deleteTx;
 window.deleteGroup = deleteGroup;
-window.openBudgetModal = showBudgetModal;
+window.openBudgetModal = showBudgetModal; // <--- FIXED MAPPING
 window.closeBudgetModal = closeBudgetModal;
 window.saveBudget = saveBudget;
 window.openRenameModal = openRenameModal;
@@ -226,7 +228,7 @@ async function saveTx() {
 // ------------------------------------
 let budgetMode = 'user'; // 'user' or 'group'
 
-// RENAME function to avoid conflict
+// RENAMED FUNCTION TO FIX "ALREADY DECLARED" ERROR
 function showBudgetModal(mode) {
     budgetMode = mode;
     const modalTitle = document.getElementById('budget-modal-title');
