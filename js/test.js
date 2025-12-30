@@ -165,7 +165,7 @@ window.showSuccess = showSuccess;
 window.showAlert = showAlert;
 window.deleteTx = deleteTx;
 window.deleteGroup = deleteGroup;
-window.openBudgetModal = openBudgetModal;
+window.openBudgetModal = showBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
 window.saveBudget = saveBudget;
 window.openRenameModal = openRenameModal;
@@ -226,7 +226,8 @@ async function saveTx() {
 // ------------------------------------
 let budgetMode = 'user'; // 'user' or 'group'
 
-function openBudgetModal(mode) {
+// RENAME function to avoid conflict
+function showBudgetModal(mode) {
     budgetMode = mode;
     const modalTitle = document.getElementById('budget-modal-title');
     const input = document.getElementById('inp-budget-edit');
