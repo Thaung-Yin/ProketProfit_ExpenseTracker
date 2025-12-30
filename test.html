@@ -78,7 +78,7 @@
                     <div class="flex justify-between items-center mb-3">
                         <div class="flex items-center gap-2">
                             <p class="text-gray-400 text-xs font-bold uppercase tracking-wider">Monthly Budget</p>
-                            <button onclick="openBudgetModal()" class="w-6 h-6 rounded-full bg-gray-100 hover:bg-brand hover:text-white text-gray-400 flex items-center justify-center transition"><i class="fa-solid fa-pen text-[10px]"></i></button>
+                            <button onclick="openBudgetModal('user')" class="w-6 h-6 rounded-full bg-gray-100 hover:bg-brand hover:text-white text-gray-400 flex items-center justify-center transition"><i class="fa-solid fa-pen text-[10px]"></i></button>
                         </div>
                         <span id="dash-budget-pct" class="text-xs font-bold text-gray-500">0%</span>
                     </div>
@@ -144,19 +144,29 @@
                     <button onclick="closeGroupDetail()" class="absolute top-4 left-4 z-10 bg-white/20 text-white p-2 rounded-lg backdrop-blur-md hover:bg-white/30 transition"><i class="fa-solid fa-arrow-left"></i> Back</button>
                     <div class="bg-brand text-white p-8 rounded-3xl shadow-lg relative overflow-hidden text-center pt-16">
                         <div class="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full blur-2xl -mr-10 -mt-10"></div>
-                        <h2 class="text-3xl font-bold" id="detail-group-name">Group</h2>
+                        
+                        <div class="flex items-center justify-center gap-3">
+                            <h2 class="text-3xl font-bold" id="detail-group-name">Group</h2>
+                            <button id="btn-rename-group" onclick="openRenameModal()" class="hidden w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition"><i class="fa-solid fa-pen text-sm"></i></button>
+                        </div>
+                        
                         <p class="text-xs text-brand-100 mt-1">ID: #<span id="detail-group-id"></span></p>
                         <div class="mt-8 flex justify-center gap-12"><div><p class="text-xs text-brand-100 uppercase mb-1">Total Income</p><p class="text-2xl font-bold text-green-300" id="detail-group-inc">0</p></div><div><p class="text-xs text-brand-100 uppercase mb-1">Total Expense</p><p class="text-2xl font-bold text-red-300" id="detail-group-exp">0</p></div></div>
                     </div>
+                    
                     <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
                         <div class="flex justify-between items-end mb-2">
-                            <span class="text-xs font-bold text-gray-400 uppercase">Group Budget</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-bold text-gray-400 uppercase">Group Budget</span>
+                                <button id="btn-edit-group-budget" onclick="openBudgetModal('group')" class="hidden w-5 h-5 rounded-full bg-gray-100 hover:bg-brand hover:text-white text-gray-400 flex items-center justify-center transition"><i class="fa-solid fa-pen text-[9px]"></i></button>
+                            </div>
                             <span id="group-budget-status" class="text-xs font-bold text-gray-600"></span>
                         </div>
                         <div class="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
                             <div id="group-budget-bar" class="bg-blue-500 h-full rounded-full transition-all" style="width: 0%"></div>
                         </div>
                     </div>
+
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100"><h3 class="font-bold mb-4">Members</h3><div class="flex gap-2 mb-4"><input type="text" id="add-member-input" placeholder="Name or ID" class="glass-input py-2 text-sm"><button onclick="addMember()" class="bg-brand text-white px-4 rounded-xl font-bold text-xs shadow-md">Add</button></div><div id="detail-member-list" class="space-y-2"></div></div>
                         <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100"><h3 class="font-bold mb-4">History</h3><div id="detail-tx-list" class="space-y-3 max-h-60 overflow-y-auto"></div></div>
@@ -186,7 +196,7 @@
                         </select>
                         <select id="filter-category" class="p-2 border border-gray-200 rounded-lg text-xs outline-none focus:border-brand bg-white">
                             <option value="all">All Categories</option>
-                            </select>
+                        </select>
                         <select id="filter-type" class="p-2 border border-gray-200 rounded-lg text-xs outline-none focus:border-brand bg-white">
                             <option value="all">All Types</option>
                             <option value="income">Income</option>
@@ -281,7 +291,7 @@
 
     <div id="budget-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="bg-white p-6 rounded-3xl shadow-2xl text-center scale-in max-w-sm w-full">
-            <h3 class="text-xl font-bold text-brandDark mb-4">Set Monthly Budget</h3>
+            <h3 id="budget-modal-title" class="text-xl font-bold text-brandDark mb-4">Set Monthly Budget</h3>
             <div class="bg-gray-50 p-4 rounded-xl mb-4">
                 <input type="number" id="inp-budget-edit" placeholder="Amount (e.g. 300000)" class="w-full bg-transparent text-center text-2xl font-bold outline-none text-gray-800 placeholder-gray-300">
                 <p class="text-xs text-gray-400 mt-1">MMK / Month</p>
@@ -289,6 +299,19 @@
             <div class="flex gap-3">
                 <button onclick="closeBudgetModal()" class="flex-1 py-3 bg-gray-100 text-gray-500 rounded-xl font-bold hover:bg-gray-200 transition">Cancel</button>
                 <button onclick="saveBudget()" class="flex-1 bg-brand text-white py-3 rounded-xl font-bold shadow-lg hover:bg-brandDark transition">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="rename-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="bg-white p-6 rounded-3xl shadow-2xl text-center scale-in max-w-sm w-full">
+            <h3 class="text-xl font-bold text-brandDark mb-4">Rename Group</h3>
+            <div class="bg-gray-50 p-4 rounded-xl mb-4">
+                <input type="text" id="inp-rename-group" placeholder="New Group Name" class="w-full bg-transparent text-center text-lg font-bold outline-none text-gray-800 placeholder-gray-300">
+            </div>
+            <div class="flex gap-3">
+                <button onclick="closeRenameModal()" class="flex-1 py-3 bg-gray-100 text-gray-500 rounded-xl font-bold hover:bg-gray-200 transition">Cancel</button>
+                <button onclick="saveGroupName()" class="flex-1 bg-brand text-white py-3 rounded-xl font-bold shadow-lg hover:bg-brandDark transition">Save</button>
             </div>
         </div>
     </div>

@@ -4,8 +4,8 @@
 import { auth, db } from "./firebase.js"; 
 import { onAuthStateChanged, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
 import { 
-    collection, addDoc, deleteDoc, doc, getDoc, updateDoc, arrayUnion, setDoc, 
-    onSnapshot, query, orderBy, serverTimestamp, where 
+    collection, addDoc, deleteDoc, doc, getDoc, updateDoc, arrayUnion, arrayRemove, setDoc, 
+    onSnapshot, query, orderBy, serverTimestamp, where, getDocs 
 } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
 // ==========================================
@@ -107,7 +107,6 @@ window.onload = () => {
 };
 
 function initRealTimeListeners() {
-    // Transaction Filter: Matches UserID
     const qTx = query(
         collection(db, "transactions"), 
         where("userId", "==", currentUser.uid), 
@@ -122,7 +121,6 @@ function initRealTimeListeners() {
         console.error("Tx Listener Error:", error);
     });
 
-    // Group Filter: Matches Member Name
     const qGroups = query(
         collection(db, "groups"),
         where("members", "array-contains", userProfile.name)
@@ -131,6 +129,10 @@ function initRealTimeListeners() {
     onSnapshot(qGroups, (snapshot) => {
         dbData.groups = [];
         snapshot.forEach((doc) => { dbData.groups.push({ id: doc.id, ...doc.data() }); });
+        
+        // REFRESH DASHBOARD UI TOO (Fix for empty group list)
+        refreshUI();
+        
         if(document.getElementById('view-group').classList.contains('block')) renderGroupList(); 
     });
 }
@@ -152,6 +154,7 @@ window.createGroup = createGroup;
 window.openGroupDetail = openGroupDetail;
 window.closeGroupDetail = closeGroupDetail;
 window.addMember = addMember;
+window.removeMember = removeMember;
 window.saveProfile = saveProfile;
 window.togglePasswordForm = togglePasswordForm;
 window.changeUserPassword = changeUserPassword;
@@ -165,6 +168,9 @@ window.deleteGroup = deleteGroup;
 window.openBudgetModal = openBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
 window.saveBudget = saveBudget;
+window.openRenameModal = openRenameModal;
+window.closeRenameModal = closeRenameModal;
+window.saveGroupName = saveGroupName;
 
 // ==========================================
 // 5. MAIN LOGIC
@@ -218,33 +224,6 @@ async function saveTx() {
 // ------------------------------------
 // BUDGET LOGIC
 // ------------------------------------
-function openBudgetModal() {
-    document.getElementById('inp-budget-edit').value = userProfile.budget || '';
-    document.getElementById('budget-modal').classList.remove('hidden');
-}
-function closeBudgetModal() {
-    document.getElementById('budget-modal').classList.add('hidden');
-}
-async function saveBudget() {
-    const val = document.getElementById('inp-budget-edit').value;
-    const newBudget = val ? parseFloat(val) : 0;
-    
-    try {
-        const userRef = doc(db, "users", currentUser.uid);
-        await updateDoc(userRef, { monthlyBudget: newBudget });
-        userProfile.budget = newBudget;
-        closeBudgetModal();
-        renderDashboard(); // Refresh bar immediately
-        showSuccess("Budget Updated!");
-    } catch(e) {
-        console.error(e);
-        showAlert("Failed to save budget.");
-    }
-}
-
-// ------------------------------------
-// UPDATED BUDGET LOGIC (Handles User & Group)
-// ------------------------------------
 let budgetMode = 'user'; // 'user' or 'group'
 
 function openBudgetModal(mode) {
@@ -257,7 +236,6 @@ function openBudgetModal(mode) {
         modalTitle.innerText = "Set Monthly Budget";
         input.value = userProfile.budget || '';
     } else {
-        // Group Mode
         const g = dbData.groups.find(x => x.id === activeGroupId);
         if (!g) return;
         modalTitle.innerText = `Budget for ${g.name}`;
@@ -275,27 +253,21 @@ function closeBudgetModal() {
 async function saveBudget() {
     const val = document.getElementById('inp-budget-edit').value;
     const newBudget = val ? parseFloat(val) : 0;
-    const modal = document.getElementById('budget-modal');
-
+    
     try {
         if (budgetMode === 'user') {
-            // Save to User Profile
             const userRef = doc(db, "users", currentUser.uid);
             await updateDoc(userRef, { monthlyBudget: newBudget });
             userProfile.budget = newBudget;
             renderDashboard(); 
             showSuccess("Personal Budget Updated!");
         } else {
-            // Save to Group
             if (!activeGroupId) return;
             const groupRef = doc(db, "groups", activeGroupId);
             await updateDoc(groupRef, { monthlyBudget: newBudget });
-            
-            // Update local data immediately for UI refresh
             const gIndex = dbData.groups.findIndex(x => x.id === activeGroupId);
             if(gIndex !== -1) dbData.groups[gIndex].monthlyBudget = newBudget;
-            
-            openGroupDetail(activeGroupId); // Refresh Group View
+            openGroupDetail(activeGroupId);
             showSuccess("Group Budget Updated!");
         }
         closeBudgetModal();
@@ -304,8 +276,42 @@ async function saveBudget() {
         showAlert("Failed to save budget.");
     }
 }
+
 // ------------------------------------
+// GROUP RENAME LOGIC
 // ------------------------------------
+function openRenameModal() {
+    const g = dbData.groups.find(x => x.id === activeGroupId);
+    if (!g) return;
+    document.getElementById('inp-rename-group').value = g.name;
+    document.getElementById('rename-modal').classList.remove('hidden');
+}
+
+function closeRenameModal() {
+    document.getElementById('rename-modal').classList.add('hidden');
+}
+
+async function saveGroupName() {
+    const newName = document.getElementById('inp-rename-group').value.trim();
+    if (!newName) { showAlert("Name cannot be empty."); return; }
+    
+    try {
+        const groupRef = doc(db, "groups", activeGroupId);
+        await updateDoc(groupRef, { name: newName });
+        
+        // Update Local & UI
+        const gIndex = dbData.groups.findIndex(x => x.id === activeGroupId);
+        if(gIndex !== -1) dbData.groups[gIndex].name = newName;
+        
+        document.getElementById('detail-group-name').innerText = newName;
+        closeRenameModal();
+        showSuccess("Group Renamed!");
+        refreshUI(); // Updates dashboard list too
+    } catch(e) {
+        console.error(e);
+        showAlert("Failed to rename group.");
+    }
+}
 
 async function saveProfile() {
     const newName = document.getElementById('settings-fullname').value.trim();
@@ -424,10 +430,8 @@ function router(page) {
 
 function renderDashboard() {
     let bal = 0, inc = 0, exp = 0;
-    
-    // Calculate Budget Stats
     const now = new Date();
-    const currentMonth = now.toISOString().slice(0, 7); // "2023-10"
+    const currentMonth = now.toISOString().slice(0, 7); 
     let monthlyExp = 0;
 
     if(dbData.transactions) {
@@ -445,7 +449,6 @@ function renderDashboard() {
     document.getElementById('dash-income-card').innerText = inc.toLocaleString() + ' MMK';
     document.getElementById('dash-expense-card').innerText = exp.toLocaleString() + ' MMK';
 
-    // Update Budget Bar
     const limit = userProfile.budget || 0;
     const spentEl = document.getElementById('dash-spent-month');
     const limitEl = document.getElementById('dash-budget-limit');
@@ -459,7 +462,6 @@ function renderDashboard() {
         const pct = Math.min((monthlyExp / limit) * 100, 100);
         pctEl.innerText = Math.round((monthlyExp / limit) * 100) + '%';
         bar.style.width = pct + '%';
-        
         bar.className = "h-full rounded-full transition-all duration-500 ";
         if(pct < 50) bar.classList.add('bg-green-500');
         else if(pct < 80) bar.classList.add('bg-yellow-400');
@@ -470,7 +472,20 @@ function renderDashboard() {
         bar.style.width = '0%';
     }
 
-    // Recent Transactions
+    // DASHBOARD GROUPS
+    const glist = document.getElementById('dash-groups-list');
+    if(glist) {
+        glist.innerHTML = '';
+        if(!dbData.groups || dbData.groups.length === 0) {
+            glist.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No groups yet.</p>';
+        } else {
+            dbData.groups.slice(0,3).forEach(g => {
+                const gExp = dbData.transactions.filter(t => t.groupId === g.id && t.type==='expense').reduce((s,t)=>s+t.amount,0);
+                glist.innerHTML += `<div class="flex justify-between items-center p-3 bg-gray-50 rounded-xl mb-2 cursor-pointer hover:bg-gray-100 transition" onclick="router('group');openGroupDetail('${g.id}')"><div><p class="text-sm font-bold text-gray-700">${g.name}</p><p class="text-[10px] text-gray-400">Spent: ${gExp.toLocaleString()}</p></div><i class="fa-solid fa-chevron-right text-gray-300 text-xs"></i></div>`;
+            });
+        }
+    }
+
     const tbody = document.getElementById('dash-recent-table');
     tbody.innerHTML = '';
     if(dbData.transactions && dbData.transactions.length > 0) {
@@ -645,15 +660,30 @@ function openGroupDetail(id) {
     document.getElementById('detail-group-name').innerText = g.name;
     document.getElementById('detail-group-id').innerText = g.id.slice(0,6);
     
+    // Header Delete & Edit Buttons (Owner Only)
     let btnContainer = document.querySelector('#group-detail-view .bg-brand');
-    let existingBtn = document.getElementById('btn-delete-group');
-    if(existingBtn) existingBtn.remove();
-    let delBtn = document.createElement('button');
-    delBtn.id = 'btn-delete-group';
-    delBtn.className = "absolute top-4 right-4 bg-white/20 hover:bg-red-500 hover:text-white text-white p-2 rounded-lg backdrop-blur-md transition";
-    delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-    delBtn.onclick = (e) => { e.stopPropagation(); deleteGroup(id); };
-    btnContainer.appendChild(delBtn);
+    let existingDelBtn = document.getElementById('btn-delete-group');
+    if(existingDelBtn) existingDelBtn.remove();
+
+    // Reset Buttons Visibility
+    const renameBtn = document.getElementById('btn-rename-group');
+    const budgetBtn = document.getElementById('btn-edit-group-budget');
+    
+    if (currentUser.uid === g.ownerId) {
+        // Show Owner Controls
+        renameBtn.classList.remove('hidden');
+        budgetBtn.classList.remove('hidden');
+        
+        let delBtn = document.createElement('button');
+        delBtn.id = 'btn-delete-group';
+        delBtn.className = "absolute top-4 right-4 bg-white/20 hover:bg-red-500 hover:text-white text-white p-2 rounded-lg backdrop-blur-md transition";
+        delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+        delBtn.onclick = (e) => { e.stopPropagation(); deleteGroup(id); };
+        btnContainer.appendChild(delBtn);
+    } else {
+        renameBtn.classList.add('hidden');
+        budgetBtn.classList.add('hidden');
+    }
 
     const gInc = dbData.transactions.filter(t => t.groupId === id && t.type==='income').reduce((s,t)=>s+t.amount,0);
     const gExp = dbData.transactions.filter(t => t.groupId === id && t.type==='expense').reduce((s,t)=>s+t.amount,0);
@@ -683,10 +713,25 @@ function openGroupDetail(id) {
     groupTxs.forEach(t => {
         txList.innerHTML += `<div class="flex justify-between items-center p-3 border-b border-gray-50"><div><p class="text-xs font-bold text-gray-700">${t.desc}</p><p class="text-[10px] text-gray-400">Paid by You</p></div><div class="flex items-center gap-3"><span class="text-xs font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span><button onclick="deleteTx('${t.id}')" class="text-gray-300 hover:text-red-500 transition"><i class="fa-solid fa-trash text-xs"></i></button></div></div>`;
     });
+    
+    // MEMBER LIST WITH REMOVE BUTTON
     const mList = document.getElementById('detail-member-list');
     mList.innerHTML = '';
-    const members = g.members || ['You'];
-    members.forEach(m => { mList.innerHTML += `<div class="p-3 bg-gray-50 rounded-xl flex items-center gap-3"><div class="w-8 h-8 rounded-full bg-brand text-white flex items-center justify-center font-bold text-xs">${m[0] || 'U'}</div><span class="text-sm font-bold">${m}</span></div>`; });
+    const members = g.members || [];
+    members.forEach(m => { 
+        let removeBtnHTML = '';
+        // Only owner can remove, and cannot remove self
+        if (currentUser.uid === g.ownerId && m !== userProfile.name) {
+            removeBtnHTML = `<button onclick="removeMember('${m}')" class="text-gray-300 hover:text-red-500 transition ml-auto"><i class="fa-solid fa-times"></i></button>`;
+        }
+        
+        mList.innerHTML += `
+            <div class="p-3 bg-gray-50 rounded-xl flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full bg-brand text-white flex items-center justify-center font-bold text-xs">${m[0] || 'U'}</div>
+                <span class="text-sm font-bold">${m}</span>
+                ${removeBtnHTML}
+            </div>`; 
+    });
 }
 
 function closeGroupDetail() { 
@@ -695,21 +740,59 @@ function closeGroupDetail() {
     renderGroupList(); 
 }
 
+// ------------------------------------
+// MEMBER VALIDATION LOGIC (FIXED)
+// ------------------------------------
 async function addMember() {
     const inputEl = document.getElementById('add-member-input');
-    const newMember = inputEl.value.trim();
-    if (!newMember) { showAlert("Enter name/ID."); return; }
-    if (!activeGroupId) { showAlert("Error: No active group."); return; }
+    const inputVal = inputEl.value.trim();
+    
+    if (!inputVal) { showAlert("Enter name or ID."); return; }
+    if (!activeGroupId) { showAlert("No active group."); return; }
+
     try {
-        const groupRef = doc(db, "groups", activeGroupId);
-        await updateDoc(groupRef, { members: arrayUnion(newMember) });
-        showSuccess("Member Added!");
-        inputEl.value = ''; 
+        // 1. Check if user exists by Share ID
+        const qId = query(collection(db, "users"), where("shareID", "==", inputVal));
+        const snapId = await getDocs(qId);
+
+        let foundUser = null;
+
+        if (!snapId.empty) {
+            foundUser = snapId.docs[0].data();
+        } else {
+            // 2. Fallback: Check if user exists by Name
+            const qName = query(collection(db, "users"), where("fullname", "==", inputVal));
+            const snapName = await getDocs(qName);
+            if(!snapName.empty) foundUser = snapName.docs[0].data();
+        }
+
+        if (foundUser) {
+            const groupRef = doc(db, "groups", activeGroupId);
+            await updateDoc(groupRef, { members: arrayUnion(foundUser.fullname) });
+            showSuccess(`Added ${foundUser.fullname}!`);
+            inputEl.value = ''; 
+        } else {
+            // STRICT ALERT IF NOT FOUND
+            showAlert("User not found in database.");
+        }
     } catch (e) {
-        console.error("Error adding member:", e);
-        showAlert("Failed to add member.");
+        console.error("Member Search Error:", e);
+        showAlert("Error searching user.");
     }
 }
+
+async function removeMember(memberName) {
+    if(!confirm(`Remove ${memberName} from group?`)) return;
+    try {
+        const groupRef = doc(db, "groups", activeGroupId);
+        await updateDoc(groupRef, { members: arrayRemove(memberName) });
+        showSuccess("Member Removed");
+    } catch (e) {
+        console.error(e);
+        showAlert("Failed to remove member.");
+    }
+}
+// ------------------------------------
 
 function logout() { 
     signOut(auth).then(() => {
@@ -737,9 +820,7 @@ function applyFilters() {
 
     if(dbData.transactions && dbData.transactions.length > 0) {
         const filtered = dbData.transactions.filter(t => {
-            // Split date "2023-10-05" -> ["2023", "10", "05"]
             const txMonth = t.date ? t.date.split('-')[1] : null;
-            
             const matchMonth = month === 'all' || (txMonth === month);
             const matchCat = cat === 'all' || t.category === cat;
             const matchType = type === 'all' || t.type === type;
