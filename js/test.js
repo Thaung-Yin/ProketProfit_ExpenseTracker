@@ -5,13 +5,13 @@ import { auth, db } from "./firebase.js";
 import { onAuthStateChanged, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
 import { 
     collection, addDoc, deleteDoc, doc, getDoc, updateDoc, arrayUnion, setDoc, 
-    onSnapshot, query, orderBy, serverTimestamp, where // <--- Added 'where'
+    onSnapshot, query, orderBy, serverTimestamp, where 
 } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
 // ==========================================
-// 2. STATE
+// 2. STATE & CONFIG
 // ==========================================
-let userProfile = { name: 'Loading...', id: '...' };
+let userProfile = { name: 'Loading...', id: '...', budget: 0 };
 let dbData = { transactions: [], groups: [] };
 let txType = 'expense';
 let selBank = 'Cash';
@@ -51,11 +51,15 @@ const categories = [
     { name: 'Other', icon: 'fa-ellipsis', color: 'bg-gray-200', text: 'text-gray-600' }
 ];
 
+// ==========================================
+// 3. INITIALIZATION & LOGIN LOGIC
+// ==========================================
 window.onload = () => {
+    const loader = document.getElementById('global-loader');
+
     onAuthStateChanged(auth, async (user) => {
         if (user) {
             currentUser = user;
-            
             try {
                 const docRef = doc(db, "users", user.uid);
                 const docSnap = await getDoc(docRef);
@@ -64,44 +68,46 @@ window.onload = () => {
                     const data = docSnap.data();
                     userProfile.name = data.fullname || user.displayName;
                     userProfile.id = data.shareID || "No ID";
+                    userProfile.budget = data.monthlyBudget || 0; 
                 } else {
-                    console.warn("Profile missing. Generating new ID...");
                     const shareID = Math.floor(100000 + Math.random() * 900000).toString();
                     const newName = user.displayName || user.email.split('@')[0];
-
                     await setDoc(docRef, {
                         fullname: newName,
                         email: user.email,
                         uid: user.uid,
                         shareID: shareID,
                         createdAt: new Date(),
-                        role: 'user' // Default role
+                        role: 'user',
+                        monthlyBudget: 0
                     });
-
                     userProfile.name = newName;
                     userProfile.id = shareID;
+                    userProfile.budget = 0;
                 }
+                
                 updateProfileUI();
-                initRealTimeListeners(); // Start listeners AFTER profile is loaded
+                initRealTimeListeners();
+                populateReportDropdowns();
+                
                 router('dashboard');
                 renderBankScroll();
                 renderCategoryScroll(); 
-            } catch (e) {
-                console.error("Error fetching/creating profile:", e);
-            }
 
+                if(loader) setTimeout(() => loader.classList.add('hidden'), 500);
+
+            } catch (e) {
+                console.error("Error fetching profile:", e);
+                if(loader) loader.classList.add('hidden');
+            }
         } else {
             window.location.href = "./index.html";
         }
     });
 };
 
-// ==========================================
-// UPDATED LISTENERS (PRIVACY FIX)
-// ==========================================
 function initRealTimeListeners() {
-    // 1. Transactions: Only show where userId matches current user
-    // NOTE: This requires a Firestore Composite Index (userId + date). Check Console for link!
+    // Transaction Filter: Matches UserID
     const qTx = query(
         collection(db, "transactions"), 
         where("userId", "==", currentUser.uid), 
@@ -113,10 +119,10 @@ function initRealTimeListeners() {
         snapshot.forEach((doc) => { dbData.transactions.push({ id: doc.id, ...doc.data() }); });
         refreshUI(); 
     }, (error) => {
-        console.error("Tx Listener Error (Did you create the index?):", error);
+        console.error("Tx Listener Error:", error);
     });
 
-    // 2. Groups: Only show groups where 'members' array contains my name
+    // Group Filter: Matches Member Name
     const qGroups = query(
         collection(db, "groups"),
         where("members", "array-contains", userProfile.name)
@@ -129,7 +135,9 @@ function initRealTimeListeners() {
     });
 }
 
-// Window Assignments
+// ==========================================
+// 4. GLOBAL ASSIGNMENTS
+// ==========================================
 window.router = router;
 window.selectBank = selectBank;
 window.selectCategory = selectCategory;
@@ -154,6 +162,9 @@ window.showSuccess = showSuccess;
 window.showAlert = showAlert;
 window.deleteTx = deleteTx;
 window.deleteGroup = deleteGroup;
+window.openBudgetModal = openBudgetModal;
+window.closeBudgetModal = closeBudgetModal;
+window.saveBudget = saveBudget;
 
 // ==========================================
 // 5. MAIN LOGIC
@@ -162,6 +173,7 @@ function refreshUI() {
     if(!document.getElementById('view-dashboard').classList.contains('hidden')) renderDashboard();
     if(!document.getElementById('view-income').classList.contains('hidden')) renderLists();
     if(!document.getElementById('view-expense').classList.contains('hidden')) renderLists();
+    if(!document.getElementById('view-reports').classList.contains('hidden')) applyFilters();
 }
 
 async function saveTx() {
@@ -170,15 +182,11 @@ async function saveTx() {
     const isGrp = document.getElementById('inp-is-group').checked;
     const grpId = isGrp ? document.getElementById('inp-group-select').value : null;
     
-    // Validation
     if(!amt) { showAlert("Please fill in Amount."); return; }
     
     let finalDesc = desc;
     if (txType === 'expense' && !desc) {
-        if(selCategory === 'Other') {
-             showAlert("Please add a Note for 'Other' category."); 
-             return; 
-        }
+        if(selCategory === 'Other') { showAlert("Please add a Note for 'Other'."); return; }
         finalDesc = selCategory; 
     } else if (!desc) {
         showAlert("Please fill in Note.");
@@ -195,7 +203,7 @@ async function saveTx() {
             date: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
             groupId: grpId,
-            userId: currentUser.uid // Stores ID so filter works
+            userId: currentUser.uid
         });
         closeModal();
         document.getElementById('inp-amount').value = '';
@@ -207,47 +215,67 @@ async function saveTx() {
     }
 }
 
-// ---------------------------------------------------------
-// PROFILE & AUTH FUNCTIONS
-// ---------------------------------------------------------
+// ------------------------------------
+// BUDGET LOGIC
+// ------------------------------------
+function openBudgetModal() {
+    document.getElementById('inp-budget-edit').value = userProfile.budget || '';
+    document.getElementById('budget-modal').classList.remove('hidden');
+}
+function closeBudgetModal() {
+    document.getElementById('budget-modal').classList.add('hidden');
+}
+async function saveBudget() {
+    const val = document.getElementById('inp-budget-edit').value;
+    const newBudget = val ? parseFloat(val) : 0;
+    
+    try {
+        const userRef = doc(db, "users", currentUser.uid);
+        await updateDoc(userRef, { monthlyBudget: newBudget });
+        userProfile.budget = newBudget;
+        closeBudgetModal();
+        renderDashboard(); // Refresh bar immediately
+        showSuccess("Budget Updated!");
+    } catch(e) {
+        console.error(e);
+        showAlert("Failed to save budget.");
+    }
+}
+// ------------------------------------
+
 async function saveProfile() {
     const newName = document.getElementById('settings-fullname').value.trim();
-
-    if (!newName) {
-        showAlert("Name cannot be empty.");
-        return;
-    }
+    if (!newName) { showAlert("Name cannot be empty."); return; }
 
     try {
-        // 1. Update Database
         const userRef = doc(db, "users", currentUser.uid);
-        await updateDoc(userRef, {
-            fullname: newName
-        });
-
-        // 2. Update Local State & UI
+        await updateDoc(userRef, { fullname: newName });
         userProfile.name = newName;
         updateProfileUI();
-
         showSuccess("Profile Updated!");
-        // Note: For groups to update with new name, we'd need more complex logic. 
-        // For now, groups keep the old name.
     } catch (e) {
         console.error("Error updating profile:", e);
         showAlert("Failed to update profile.");
     }
 }
 
+function updateProfileUI() {
+    const url = `https://ui-avatars.com/api/?name=${userProfile.name}&background=27386d&color=fff`;
+    document.getElementById('header-avatar').src = url;
+    document.getElementById('profile-img-lg').src = url;
+    document.getElementById('header-name').innerText = userProfile.name;
+    document.getElementById('profile-name').innerText = userProfile.name;
+    document.getElementById('settings-fullname').value = userProfile.name;
+    document.getElementById('settings-userid').value = userProfile.id;
+}
+
 function togglePasswordForm() {
     const form = document.getElementById('password-form-container');
     const btn = document.getElementById('btn-toggle-pw');
-    
     if (form.classList.contains('hidden')) {
-        form.classList.remove('hidden');
-        btn.classList.add('hidden');
+        form.classList.remove('hidden'); btn.classList.add('hidden');
     } else {
-        form.classList.add('hidden');
-        btn.classList.remove('hidden');
+        form.classList.add('hidden'); btn.classList.remove('hidden');
         document.getElementById('old-password').value = '';
         document.getElementById('new-password').value = '';
         document.getElementById('verify-password').value = '';
@@ -258,70 +286,57 @@ async function changeUserPassword() {
     const oldPass = document.getElementById('old-password').value;
     const newPass = document.getElementById('new-password').value;
     const verifyPass = document.getElementById('verify-password').value;
-
-    if (!oldPass || !newPass || !verifyPass) {
-        showAlert("Please fill in all password fields.");
-        return;
-    }
-
-    if (newPass !== verifyPass) {
-        showAlert("New passwords do not match.");
-        return;
-    }
-
-    if (newPass.length < 6) {
-        showAlert("Password must be at least 6 characters.");
-        return;
-    }
+    if (!oldPass || !newPass || !verifyPass) { showAlert("Fill all fields."); return; }
+    if (newPass !== verifyPass) { showAlert("Passwords mismatch."); return; }
+    if (newPass.length < 6) { showAlert("Password too short."); return; }
 
     try {
         const credential = EmailAuthProvider.credential(currentUser.email, oldPass);
         await reauthenticateWithCredential(currentUser, credential);
         await updatePassword(currentUser, newPass);
-        showSuccess("Password Updated Successfully!");
-        togglePasswordForm(); 
+        showSuccess("Password Updated!"); togglePasswordForm(); 
     } catch (error) {
-        console.error("Error updating password:", error);
-        if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
-            showAlert("Incorrect old password.");
-        } else {
-            showAlert("Error: " + error.message);
-        }
+        showAlert("Error: " + error.message);
     }
 }
 
 async function createGroup() {
     const name = document.getElementById('new-group-name').value;
+    const budget = document.getElementById('new-group-budget').value;
     if(name) {
         try {
             await addDoc(collection(db, "groups"), {
                 name: name,
                 members: [userProfile.name],
                 ownerId: currentUser.uid,
+                monthlyBudget: budget ? parseFloat(budget) : 0,
                 shareIncome: document.getElementById('create-share-inc').checked,
                 shareExpense: document.getElementById('create-share-exp').checked,
                 createdAt: serverTimestamp()
             });
             document.getElementById('new-group-name').value = ''; 
+            document.getElementById('new-group-budget').value = '';
             cancelCreateGroup();
             setTimeout(() => { showSuccess("Group Created!"); }, 300);
-        } catch (e) {
-            console.error("Error creating group: ", e);
-            showAlert("Could not create group.");
-        }
-    } else { showAlert("Please enter a group name."); }
+        } catch (e) { showAlert("Could not create group."); }
+    } else { showAlert("Enter group name."); }
 }
 
 async function deleteTx(id) {
-    if(!confirm("Are you sure you want to delete this transaction?")) return;
-    try { await deleteDoc(doc(db, "transactions", id)); showSuccess("Transaction Deleted"); } catch (e) { showAlert("Failed to delete."); }
+    if(confirm("Delete this transaction?")) { 
+        try { await deleteDoc(doc(db, "transactions", id)); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } 
+    } 
 }
 
 async function deleteGroup(id) {
-    if(!confirm("Delete this group? History will remain.")) return;
-    try { await deleteDoc(doc(db, "groups", id)); closeGroupDetail(); showSuccess("Group Deleted"); } catch (e) { showAlert("Failed to delete."); }
+    if(confirm("Delete this group?")) { 
+        try { await deleteDoc(doc(db, "groups", id)); closeGroupDetail(); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } 
+    } 
 }
 
+// ==========================================
+// 6. UI RENDERERS
+// ==========================================
 function router(page) {
     document.querySelectorAll('.view-section').forEach(el => { el.classList.remove('block'); el.classList.add('hidden'); });
     const target = document.getElementById('view-' + page);
@@ -340,33 +355,58 @@ function router(page) {
 
     refreshUI();
     if(page === 'group') renderGroupList();
-    if(page === 'reports') applyFilters();
+    if(page === 'reports') applyFilters(); 
 }
 
 function renderDashboard() {
     let bal = 0, inc = 0, exp = 0;
+    
+    // Calculate Budget Stats
+    const now = new Date();
+    const currentMonth = now.toISOString().slice(0, 7); // "2023-10"
+    let monthlyExp = 0;
+
     if(dbData.transactions) {
         dbData.transactions.forEach(t => {
             if(t.type === 'income') { bal += t.amount; inc += t.amount; }
-            else { bal -= t.amount; exp += t.amount; }
+            else { 
+                bal -= t.amount; 
+                exp += t.amount; 
+                if(t.date && t.date.startsWith(currentMonth)) monthlyExp += t.amount;
+            }
         });
     }
+
     document.getElementById('dash-balance').innerText = bal.toLocaleString() + ' MMK';
     document.getElementById('dash-income-card').innerText = inc.toLocaleString() + ' MMK';
     document.getElementById('dash-expense-card').innerText = exp.toLocaleString() + ' MMK';
 
-    const glist = document.getElementById('dash-groups-list');
-    if(glist) {
-        glist.innerHTML = '';
-        if(!dbData.groups || dbData.groups.length === 0) {
-            glist.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No groups yet.</p>';
-        } else {
-            dbData.groups.slice(0,3).forEach(g => {
-                const gExp = dbData.transactions.filter(t => t.groupId === g.id && t.type==='expense').reduce((s,t)=>s+t.amount,0);
-                glist.innerHTML += `<div class="flex justify-between items-center p-3 bg-gray-50 rounded-xl mb-2 cursor-pointer hover:bg-gray-100 transition" onclick="router('group');openGroupDetail('${g.id}')"><div><p class="text-sm font-bold text-gray-700">${g.name}</p><p class="text-[10px] text-gray-400">Spent: ${gExp.toLocaleString()}</p></div><i class="fa-solid fa-chevron-right text-gray-300 text-xs"></i></div>`;
-            });
-        }
+    // Update Budget Bar
+    const limit = userProfile.budget || 0;
+    const spentEl = document.getElementById('dash-spent-month');
+    const limitEl = document.getElementById('dash-budget-limit');
+    const bar = document.getElementById('dash-budget-bar');
+    const pctEl = document.getElementById('dash-budget-pct');
+
+    if(spentEl) spentEl.innerText = monthlyExp.toLocaleString();
+    
+    if(limit > 0 && limitEl) {
+        limitEl.innerText = limit.toLocaleString();
+        const pct = Math.min((monthlyExp / limit) * 100, 100);
+        pctEl.innerText = Math.round((monthlyExp / limit) * 100) + '%';
+        bar.style.width = pct + '%';
+        
+        bar.className = "h-full rounded-full transition-all duration-500 ";
+        if(pct < 50) bar.classList.add('bg-green-500');
+        else if(pct < 80) bar.classList.add('bg-yellow-400');
+        else bar.classList.add('bg-red-500');
+    } else if(limitEl) {
+        limitEl.innerText = "No Limit";
+        pctEl.innerText = "N/A";
+        bar.style.width = '0%';
     }
+
+    // Recent Transactions
     const tbody = document.getElementById('dash-recent-table');
     tbody.innerHTML = '';
     if(dbData.transactions && dbData.transactions.length > 0) {
@@ -400,15 +440,10 @@ function renderLists() {
             
             let iconClass = type === 'income' ? 'fa-arrow-down' : 'fa-arrow-up';
             let bgClass = type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600';
-            
             if (type === 'expense' && t.category) {
                  const cat = categories.find(c => c.name === t.category);
-                 if(cat) {
-                     iconClass = cat.icon;
-                     bgClass = cat.color + ' ' + cat.text;
-                 }
+                 if(cat) { iconClass = cat.icon; bgClass = cat.color + ' ' + cat.text; }
             }
-
             list.innerHTML += `<div class="flex justify-between items-center p-4 bg-white rounded-2xl border border-gray-100 shadow-sm group"><div class="flex items-center gap-4"><div class="w-10 h-10 rounded-full ${bgClass} flex items-center justify-center"><i class="fa-solid ${iconClass}"></i></div><div><p class="font-bold text-gray-800">${t.desc}</p><p class="text-xs text-gray-400">${t.date} • ${t.bank}</p>${groupBadge}</div></div><div class="flex items-center gap-3"><span class="font-bold ${type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span><button onclick="deleteTx('${t.id}')" class="w-8 h-8 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition"><i class="fa-solid fa-trash text-xs"></i></button></div></div>`;
         });
     });
@@ -417,10 +452,7 @@ function renderLists() {
 function renderChart(inc, exp) {
     const ctx = document.getElementById('mainChart').getContext('2d');
     if(window.myChart) window.myChart.destroy();
-    let labels = [];
-    let dataPoints = [];
-    let bgColors = [];
-
+    let labels = []; let dataPoints = []; let bgColors = [];
     const expenseTxs = dbData.transactions.filter(t => t.type === 'expense');
 
     if (expenseTxs.length > 0) {
@@ -430,10 +462,8 @@ function renderChart(inc, exp) {
             if(!catMap[cat]) catMap[cat] = 0;
             catMap[cat] += t.amount;
         });
-
         labels = Object.keys(catMap);
         dataPoints = Object.values(catMap);
-        
         bgColors = labels.map(l => {
             const cObj = categories.find(c => c.name === l);
             if(!cObj) return '#9ca3af'; 
@@ -446,35 +476,14 @@ function renderChart(inc, exp) {
             if(cObj.name === 'Education') return '#6366f1'; 
             return '#9ca3af';
         });
-
     } else {
-        labels = ['Income', 'Expense'];
-        dataPoints = [inc, exp];
-        bgColors = ['#22c55e', '#ef4444'];
+        labels = ['Income', 'Expense']; dataPoints = [inc, exp]; bgColors = ['#22c55e', '#ef4444'];
         if(inc === 0 && exp === 0) { dataPoints = [1]; bgColors = ['#e5e7eb']; labels =['No Data']; }
     }
-
     window.myChart = new Chart(ctx, { 
         type: 'doughnut', 
-        data: { 
-            labels: labels, 
-            datasets: [{ 
-                data: dataPoints, 
-                backgroundColor: bgColors, 
-                borderWidth: 0 
-            }] 
-        }, 
-        options: { 
-            responsive: true, 
-            maintainAspectRatio: false, 
-            cutout: '70%', 
-            plugins: { 
-                legend: { 
-                    position: 'right',
-                    labels: { boxWidth: 10, font: { size: 10 } }
-                } 
-            } 
-        } 
+        data: { labels: labels, datasets: [{ data: dataPoints, backgroundColor: bgColors, borderWidth: 0 }] }, 
+        options: { responsive: true, maintainAspectRatio: false, cutout: '70%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } } } } 
     });
 }
 
@@ -486,21 +495,15 @@ function renderCategoryScroll() {
         const isSelected = selCategory === c.name;
         container.innerHTML += `
             <div onclick="selectCategory('${c.name}')" class="flex flex-col items-center p-2 rounded-xl border cursor-pointer transition ${isSelected ? 'border-brand bg-brand/5 ring-1 ring-brand' : 'border-gray-100 bg-white hover:bg-gray-50'}">
-                <div class="w-8 h-8 rounded-full ${c.color} ${c.text} flex items-center justify-center mb-1">
-                    <i class="fa-solid ${c.icon} text-xs"></i>
-                </div>
+                <div class="w-8 h-8 rounded-full ${c.color} ${c.text} flex items-center justify-center mb-1"><i class="fa-solid ${c.icon} text-xs"></i></div>
                 <span class="text-[9px] font-bold text-gray-600">${c.name}</span>
-            </div>
-        `;
+            </div>`;
     });
 }
 
 function selectCategory(name) {
-    selCategory = name;
-    renderCategoryScroll();
-    if(name === 'Other') {
-        document.getElementById('inp-desc').focus();
-    }
+    selCategory = name; renderCategoryScroll();
+    if(name === 'Other') document.getElementById('inp-desc').focus();
 }
 
 function renderBankScroll() {
@@ -519,7 +522,6 @@ function setTxType(type) {
     const bIn = document.getElementById('btn-tx-income');
     const bEx = document.getElementById('btn-tx-expense');
     const catSection = document.getElementById('category-section');
-    
     if(type === 'expense') { 
         bEx.className = "flex-1 py-2 rounded-lg bg-white shadow-sm text-brand font-bold text-xs transition-all"; 
         bIn.className = "flex-1 py-2 rounded-lg text-gray-500 font-bold text-xs transition-all"; 
@@ -540,10 +542,8 @@ function toggleGroupSelect() {
 function openModal() {
     document.getElementById('tx-modal').classList.remove('hidden');
     renderBankScroll();
-    renderCategoryScroll(); 
     selCategory = 'Other'; 
     renderCategoryScroll();
-
     const grpCont = document.getElementById('group-option-container');
     const sel = document.getElementById('inp-group-select');
     if(dbData.groups && dbData.groups.length > 0) {
@@ -596,6 +596,22 @@ function openGroupDetail(id) {
     document.getElementById('detail-group-inc').innerText = gInc.toLocaleString();
     document.getElementById('detail-group-exp').innerText = gExp.toLocaleString();
     
+    const bar = document.getElementById('group-budget-bar');
+    const status = document.getElementById('group-budget-status');
+    const limit = g.monthlyBudget || 0;
+    if(limit > 0) {
+        const pct = Math.min((gExp / limit) * 100, 100);
+        status.innerText = `${gExp.toLocaleString()} / ${limit.toLocaleString()}`;
+        bar.style.width = pct + '%';
+        bar.className = "h-full rounded-full transition-all ";
+        if(pct < 50) bar.classList.add('bg-green-500');
+        else if(pct < 80) bar.classList.add('bg-yellow-400');
+        else bar.classList.add('bg-red-500');
+    } else {
+        status.innerText = "No Limit";
+        bar.style.width = '0%';
+    }
+
     const txList = document.getElementById('detail-tx-list');
     txList.innerHTML = '';
     const groupTxs = dbData.transactions.filter(t => t.groupId === id);
@@ -618,15 +634,8 @@ function closeGroupDetail() {
 async function addMember() {
     const inputEl = document.getElementById('add-member-input');
     const newMember = inputEl.value.trim();
-    
-    if (!newMember) {
-        showAlert("Please enter a name or ID.");
-        return;
-    }
-    if (!activeGroupId) {
-        showAlert("Error: No active group found.");
-        return;
-    }
+    if (!newMember) { showAlert("Enter name/ID."); return; }
+    if (!activeGroupId) { showAlert("Error: No active group."); return; }
     try {
         const groupRef = doc(db, "groups", activeGroupId);
         await updateDoc(groupRef, { members: arrayUnion(newMember) });
@@ -634,33 +643,56 @@ async function addMember() {
         inputEl.value = ''; 
     } catch (e) {
         console.error("Error adding member:", e);
-        showAlert("Failed to add member: " + e.message);
+        showAlert("Failed to add member.");
     }
 }
-function updateProfileUI() {
-    const url = `https://ui-avatars.com/api/?name=${userProfile.name}&background=27386d&color=fff`;
-    document.getElementById('header-avatar').src = url;
-    document.getElementById('profile-img-lg').src = url;
-    document.getElementById('header-name').innerText = userProfile.name;
-    document.getElementById('profile-name').innerText = userProfile.name;
-    document.getElementById('settings-fullname').value = userProfile.name;
-    document.getElementById('settings-userid').value = userProfile.id;
-}
+
 function logout() { 
     signOut(auth).then(() => {
         showAlert("Logged out. Redirecting..."); 
         setTimeout(()=> { window.location.href = "./index.html"; }, 1000); 
     });
 }
+
+function populateReportDropdowns() {
+    const catSel = document.getElementById('filter-category');
+    if(!catSel) return;
+    catSel.innerHTML = '<option value="all">All Categories</option>';
+    categories.forEach(c => {
+        catSel.innerHTML += `<option value="${c.name}">${c.name}</option>`;
+    });
+}
+
 function applyFilters() {
+    const month = document.getElementById('filter-month').value;
+    const cat = document.getElementById('filter-category').value;
+    const type = document.getElementById('filter-type').value;
+
     const tbody = document.getElementById('report-table-body');
     tbody.innerHTML = '';
+
     if(dbData.transactions && dbData.transactions.length > 0) {
-        dbData.transactions.forEach(t => {
-            tbody.innerHTML += `<tr class="hover:bg-gray-50 transition border-b border-gray-50 last:border-0"><td class="p-5 text-gray-500 text-xs">${t.date}</td><td class="p-5"><span class="px-2 py-1 rounded text-[10px] font-bold uppercase ${t.type==='income'?'bg-green-100 text-green-600':'bg-red-100 text-red-600'}">${t.type}</span></td><td class="p-5 font-bold text-gray-700">${t.desc} <span class="block text-[10px] text-gray-400 font-normal">${t.bank}</span></td><td class="p-5 text-right font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</td></tr>`;
+        const filtered = dbData.transactions.filter(t => {
+            // Split date "2023-10-05" -> ["2023", "10", "05"]
+            const txMonth = t.date ? t.date.split('-')[1] : null;
+            
+            const matchMonth = month === 'all' || (txMonth === month);
+            const matchCat = cat === 'all' || t.category === cat;
+            const matchType = type === 'all' || t.type === type;
+            return matchMonth && matchCat && matchType;
+        });
+
+        if(filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="p-5 text-center text-gray-400 text-xs">No results match filters.</td></tr>';
+            return;
+        }
+
+        filtered.sort((a,b) => new Date(b.date) - new Date(a.date)).forEach(t => {
+            tbody.innerHTML += `<tr class="hover:bg-gray-50 transition border-b border-gray-50 last:border-0"><td class="p-5 text-gray-500 text-xs">${t.date}</td><td class="p-5"><span class="px-2 py-1 rounded text-[10px] font-bold uppercase ${t.type==='income'?'bg-green-100 text-green-600':'bg-red-100 text-red-600'}">${t.type}</span></td><td class="p-5 font-bold text-gray-700">${t.desc} <span class="block text-[10px] text-gray-400 font-normal">${t.bank} • ${t.category||'General'}</span></td><td class="p-5 text-right font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</td></tr>`;
         });
     } else { tbody.innerHTML = '<tr><td colspan="4" class="p-5 text-center text-gray-400 text-xs">No transactions.</td></tr>'; }
 }
+
 function downloadCSV() {
     if(!dbData.transactions || dbData.transactions.length === 0) { showAlert("No data."); return; }
     let csv = "Date,Type,Category,Description,Bank,Group,Amount\n";
