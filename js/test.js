@@ -19,6 +19,9 @@ let selCategory = 'Other';
 let activeGroupId = null;
 let currentUser = null;
 
+let unsubPersonalTxs = null;
+let unsubGroupTxs = null;
+
 const banks = [
     { name: 'Cash', icon: 'fa-wallet', color: 'bg-gray-600', text: 'text-white' },
     { name: 'KBZPay', icon: 'fa-mobile-screen', color: 'bg-blue-600', text: 'text-white' },
@@ -85,63 +88,76 @@ window.onload = () => {
                     userProfile.id = shareID;
                     userProfile.budget = 0;
                 }
-                
                 updateProfileUI();
                 initRealTimeListeners();
                 populateReportDropdowns();
-                
                 router('dashboard');
                 renderBankScroll();
                 renderCategoryScroll(); 
-
                 if(loader) setTimeout(() => loader.classList.add('hidden'), 500);
-
             } catch (e) {
                 console.error("Error fetching profile:", e);
                 if(loader) loader.classList.add('hidden');
             }
         } else {
-            // Not logged in, redirect to login page
             window.location.href = "./index.html";
         }
     });
 };
 
 function initRealTimeListeners() {
-    const qTx = query(
-        collection(db, "transactions"), 
-        where("userId", "==", currentUser.uid), 
-        orderBy("date", "desc")
-    );
-
-    onSnapshot(qTx, (snapshot) => {
-        dbData.transactions = [];
-        snapshot.forEach((doc) => { dbData.transactions.push({ id: doc.id, ...doc.data() }); });
-        refreshUI(); 
-    }, (error) => {
-        console.error("Tx Listener Error:", error);
-    });
-
-    const qGroups = query(
-        collection(db, "groups"),
-        where("members", "array-contains", userProfile.name)
-    );
-
+    const qGroups = query(collection(db, "groups"), where("members", "array-contains", userProfile.name));
     onSnapshot(qGroups, (snapshot) => {
         dbData.groups = [];
-        snapshot.forEach((doc) => { dbData.groups.push({ id: doc.id, ...doc.data() }); });
-        
-        // REFRESH DASHBOARD UI TOO (Fix for empty group list)
+        const groupIds = [];
+        snapshot.forEach((doc) => { 
+            dbData.groups.push({ id: doc.id, ...doc.data() });
+            groupIds.push(doc.id);
+        });
         refreshUI();
-        
         if(document.getElementById('view-group').classList.contains('block')) renderGroupList(); 
+        setupTransactionListeners(groupIds);
     });
 }
 
+function setupTransactionListeners(groupIds) {
+    let personalTxs = [];
+    let groupTxs = [];
+
+    const mergeAndRender = () => {
+        const txMap = new Map();
+        personalTxs.forEach(t => txMap.set(t.id, t));
+        groupTxs.forEach(t => txMap.set(t.id, t));
+        dbData.transactions = Array.from(txMap.values());
+        refreshUI();
+    };
+
+    if(unsubPersonalTxs) unsubPersonalTxs();
+    const qPersonal = query(collection(db, "transactions"), where("userId", "==", currentUser.uid), orderBy("date", "desc"));
+    unsubPersonalTxs = onSnapshot(qPersonal, (snapshot) => {
+        personalTxs = [];
+        snapshot.forEach((doc) => { personalTxs.push({ id: doc.id, ...doc.data() }); });
+        mergeAndRender();
+    });
+
+    if(unsubGroupTxs) unsubGroupTxs();
+    if (groupIds.length > 0) {
+        const safeGroupIds = groupIds.slice(0, 10);
+        const qGroup = query(collection(db, "transactions"), where("groupId", "in", safeGroupIds));
+        unsubGroupTxs = onSnapshot(qGroup, (snapshot) => {
+            groupTxs = [];
+            snapshot.forEach((doc) => { groupTxs.push({ id: doc.id, ...doc.data() }); });
+            mergeAndRender();
+        });
+    } else {
+        groupTxs = [];
+        mergeAndRender();
+    }
+}
+
 // ==========================================
-// 4. GLOBAL ASSIGNMENTS
+// 5. GLOBAL ASSIGNMENTS
 // ==========================================
-// IMPORTANT: We map the window function to our renamed function below
 window.router = router;
 window.selectBank = selectBank;
 window.selectCategory = selectCategory;
@@ -167,7 +183,7 @@ window.showSuccess = showSuccess;
 window.showAlert = showAlert;
 window.deleteTx = deleteTx;
 window.deleteGroup = deleteGroup;
-window.openBudgetModal = showBudgetModal; // <--- FIXED MAPPING
+window.openBudgetModal = showBudgetModal;
 window.closeBudgetModal = closeBudgetModal;
 window.saveBudget = saveBudget;
 window.openRenameModal = openRenameModal;
@@ -175,13 +191,16 @@ window.closeRenameModal = closeRenameModal;
 window.saveGroupName = saveGroupName;
 
 // ==========================================
-// 5. MAIN LOGIC
+// 6. MAIN LOGIC
 // ==========================================
 function refreshUI() {
     if(!document.getElementById('view-dashboard').classList.contains('hidden')) renderDashboard();
     if(!document.getElementById('view-income').classList.contains('hidden')) renderLists();
     if(!document.getElementById('view-expense').classList.contains('hidden')) renderLists();
     if(!document.getElementById('view-reports').classList.contains('hidden')) applyFilters();
+    if(!document.getElementById('group-detail-view').classList.contains('hidden') && activeGroupId) {
+        openGroupDetail(activeGroupId);
+    }
 }
 
 async function saveTx() {
@@ -211,7 +230,8 @@ async function saveTx() {
             date: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
             groupId: grpId,
-            userId: currentUser.uid
+            userId: currentUser.uid,
+            userName: userProfile.name // <--- ADDED: Save User Name for Group History
         });
         closeModal();
         document.getElementById('inp-amount').value = '';
@@ -224,11 +244,10 @@ async function saveTx() {
 }
 
 // ------------------------------------
-// BUDGET LOGIC
+// BUDGET & GROUP LOGIC
 // ------------------------------------
-let budgetMode = 'user'; // 'user' or 'group'
+let budgetMode = 'user'; 
 
-// RENAMED FUNCTION TO FIX "ALREADY DECLARED" ERROR
 function showBudgetModal(mode) {
     budgetMode = mode;
     const modalTitle = document.getElementById('budget-modal-title');
@@ -248,15 +267,10 @@ function showBudgetModal(mode) {
     modal.classList.remove('hidden');
     input.focus();
 }
-
-function closeBudgetModal() {
-    document.getElementById('budget-modal').classList.add('hidden');
-}
-
+function closeBudgetModal() { document.getElementById('budget-modal').classList.add('hidden'); }
 async function saveBudget() {
     const val = document.getElementById('inp-budget-edit').value;
     const newBudget = val ? parseFloat(val) : 0;
-    
     try {
         if (budgetMode === 'user') {
             const userRef = doc(db, "users", currentUser.uid);
@@ -268,70 +282,39 @@ async function saveBudget() {
             if (!activeGroupId) return;
             const groupRef = doc(db, "groups", activeGroupId);
             await updateDoc(groupRef, { monthlyBudget: newBudget });
-            const gIndex = dbData.groups.findIndex(x => x.id === activeGroupId);
-            if(gIndex !== -1) dbData.groups[gIndex].monthlyBudget = newBudget;
-            openGroupDetail(activeGroupId);
             showSuccess("Group Budget Updated!");
         }
         closeBudgetModal();
-    } catch(e) {
-        console.error(e);
-        showAlert("Failed to save budget.");
-    }
+    } catch(e) { console.error(e); showAlert("Failed to save budget."); }
 }
-
-// ------------------------------------
-// GROUP RENAME LOGIC
-// ------------------------------------
 function openRenameModal() {
     const g = dbData.groups.find(x => x.id === activeGroupId);
     if (!g) return;
     document.getElementById('inp-rename-group').value = g.name;
     document.getElementById('rename-modal').classList.remove('hidden');
 }
-
-function closeRenameModal() {
-    document.getElementById('rename-modal').classList.add('hidden');
-}
-
+function closeRenameModal() { document.getElementById('rename-modal').classList.add('hidden'); }
 async function saveGroupName() {
     const newName = document.getElementById('inp-rename-group').value.trim();
     if (!newName) { showAlert("Name cannot be empty."); return; }
-    
     try {
         const groupRef = doc(db, "groups", activeGroupId);
         await updateDoc(groupRef, { name: newName });
-        
-        // Update Local & UI
-        const gIndex = dbData.groups.findIndex(x => x.id === activeGroupId);
-        if(gIndex !== -1) dbData.groups[gIndex].name = newName;
-        
-        document.getElementById('detail-group-name').innerText = newName;
         closeRenameModal();
         showSuccess("Group Renamed!");
-        refreshUI(); // Updates dashboard list too
-    } catch(e) {
-        console.error(e);
-        showAlert("Failed to rename group.");
-    }
+    } catch(e) { console.error(e); showAlert("Failed to rename group."); }
 }
-
 async function saveProfile() {
     const newName = document.getElementById('settings-fullname').value.trim();
     if (!newName) { showAlert("Name cannot be empty."); return; }
-
     try {
         const userRef = doc(db, "users", currentUser.uid);
         await updateDoc(userRef, { fullname: newName });
         userProfile.name = newName;
         updateProfileUI();
         showSuccess("Profile Updated!");
-    } catch (e) {
-        console.error("Error updating profile:", e);
-        showAlert("Failed to update profile.");
-    }
+    } catch (e) { console.error("Error updating profile:", e); showAlert("Failed to update profile."); }
 }
-
 function updateProfileUI() {
     const url = `https://ui-avatars.com/api/?name=${userProfile.name}&background=27386d&color=fff`;
     document.getElementById('header-avatar').src = url;
@@ -341,20 +324,12 @@ function updateProfileUI() {
     document.getElementById('settings-fullname').value = userProfile.name;
     document.getElementById('settings-userid').value = userProfile.id;
 }
-
 function togglePasswordForm() {
     const form = document.getElementById('password-form-container');
     const btn = document.getElementById('btn-toggle-pw');
-    if (form.classList.contains('hidden')) {
-        form.classList.remove('hidden'); btn.classList.add('hidden');
-    } else {
-        form.classList.add('hidden'); btn.classList.remove('hidden');
-        document.getElementById('old-password').value = '';
-        document.getElementById('new-password').value = '';
-        document.getElementById('verify-password').value = '';
-    }
+    if (form.classList.contains('hidden')) { form.classList.remove('hidden'); btn.classList.add('hidden'); } 
+    else { form.classList.add('hidden'); btn.classList.remove('hidden'); }
 }
-
 async function changeUserPassword() {
     const oldPass = document.getElementById('old-password').value;
     const newPass = document.getElementById('new-password').value;
@@ -362,17 +337,13 @@ async function changeUserPassword() {
     if (!oldPass || !newPass || !verifyPass) { showAlert("Fill all fields."); return; }
     if (newPass !== verifyPass) { showAlert("Passwords mismatch."); return; }
     if (newPass.length < 6) { showAlert("Password too short."); return; }
-
     try {
         const credential = EmailAuthProvider.credential(currentUser.email, oldPass);
         await reauthenticateWithCredential(currentUser, credential);
         await updatePassword(currentUser, newPass);
         showSuccess("Password Updated!"); togglePasswordForm(); 
-    } catch (error) {
-        showAlert("Error: " + error.message);
-    }
+    } catch (error) { showAlert("Error: " + error.message); }
 }
-
 async function createGroup() {
     const name = document.getElementById('new-group-name').value;
     const budget = document.getElementById('new-group-budget').value;
@@ -394,38 +365,28 @@ async function createGroup() {
         } catch (e) { showAlert("Could not create group."); }
     } else { showAlert("Enter group name."); }
 }
-
 async function deleteTx(id) {
-    if(confirm("Delete this transaction?")) { 
-        try { await deleteDoc(doc(db, "transactions", id)); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } 
-    } 
+    if(confirm("Delete this transaction?")) { try { await deleteDoc(doc(db, "transactions", id)); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } } 
 }
-
 async function deleteGroup(id) {
-    if(confirm("Delete this group?")) { 
-        try { await deleteDoc(doc(db, "groups", id)); closeGroupDetail(); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } 
-    } 
+    if(confirm("Delete this group?")) { try { await deleteDoc(doc(db, "groups", id)); closeGroupDetail(); showSuccess("Deleted"); } catch (e) { showAlert("Failed."); } } 
 }
 
 // ==========================================
-// 6. UI RENDERERS
+// 7. UI RENDERERS
 // ==========================================
 function router(page) {
     document.querySelectorAll('.view-section').forEach(el => { el.classList.remove('block'); el.classList.add('hidden'); });
     const target = document.getElementById('view-' + page);
     if(target) { target.classList.remove('hidden'); target.classList.add('block'); }
-    
     document.querySelectorAll('[id^="nav-d-"]').forEach(el => el.classList.remove('bg-brand', 'text-white', 'shadow-lg'));
     const dNav = document.getElementById('nav-d-' + (page==='menu'?'dashboard':page)); 
     if(dNav) dNav.classList.add('bg-brand', 'text-white', 'shadow-lg');
-
     document.querySelectorAll('[id^="nav-m-"]').forEach(el => el.classList.replace('text-brand', 'text-gray-400'));
     const mNav = document.getElementById('nav-m-' + page);
     if(mNav) mNav.classList.replace('text-gray-400', 'text-brand');
-
     const titleEl = document.getElementById('page-title');
     if(titleEl) titleEl.innerText = page.charAt(0).toUpperCase() + page.slice(1);
-
     refreshUI();
     if(page === 'group') renderGroupList();
     if(page === 'reports') applyFilters(); 
@@ -437,8 +398,11 @@ function renderDashboard() {
     const currentMonth = now.toISOString().slice(0, 7); 
     let monthlyExp = 0;
 
-    if(dbData.transactions) {
-        dbData.transactions.forEach(t => {
+    // Filter ONLY personal transactions for the Dashboard logic
+    const myTxs = dbData.transactions.filter(t => t.userId === currentUser.uid);
+
+    if(myTxs) {
+        myTxs.forEach(t => {
             if(t.type === 'income') { bal += t.amount; inc += t.amount; }
             else { 
                 bal -= t.amount; 
@@ -475,7 +439,6 @@ function renderDashboard() {
         bar.style.width = '0%';
     }
 
-    // DASHBOARD GROUPS
     const glist = document.getElementById('dash-groups-list');
     if(glist) {
         glist.innerHTML = '';
@@ -484,15 +447,17 @@ function renderDashboard() {
         } else {
             dbData.groups.slice(0,3).forEach(g => {
                 const gExp = dbData.transactions.filter(t => t.groupId === g.id && t.type==='expense').reduce((s,t)=>s+t.amount,0);
-                glist.innerHTML += `<div class="flex justify-between items-center p-3 bg-gray-50 rounded-xl mb-2 cursor-pointer hover:bg-gray-100 transition" onclick="router('group');openGroupDetail('${g.id}')"><div><p class="text-sm font-bold text-gray-700">${g.name}</p><p class="text-[10px] text-gray-400">Spent: ${gExp.toLocaleString()}</p></div><i class="fa-solid fa-chevron-right text-gray-300 text-xs"></i></div>`;
+                glist.innerHTML += `<div class="flex justify-between items-center p-3 bg-gray-50 rounded-xl mb-2 cursor-pointer hover:bg-gray-100 transition" onclick="router('group');openGroupDetail('${g.id}')"><div><p class="text-sm font-bold text-gray-700">${g.name}</p><p class="text-[10px] text-gray-400">Total Spent: ${gExp.toLocaleString()}</p></div><i class="fa-solid fa-chevron-right text-gray-300 text-xs"></i></div>`;
             });
         }
     }
 
     const tbody = document.getElementById('dash-recent-table');
     tbody.innerHTML = '';
-    if(dbData.transactions && dbData.transactions.length > 0) {
-        const sorted = [...dbData.transactions].sort((a,b) => new Date(b.date) - new Date(a.date));
+    
+    // Only show MY transactions in Recent Activity
+    if(myTxs && myTxs.length > 0) {
+        const sorted = [...myTxs].sort((a,b) => new Date(b.date) - new Date(a.date));
         sorted.slice(0,5).forEach(t => {
             const catObj = categories.find(c => c.name === t.category) || { color: 'bg-gray-100', text: 'text-gray-500' };
             const catBadge = t.type === 'income' 
@@ -503,7 +468,7 @@ function renderDashboard() {
         });
     } else { tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400 text-xs">No transactions found</td></tr>'; }
     
-    renderChart(inc, exp);
+    renderChart(inc, exp, myTxs);
 }
 
 function renderLists() {
@@ -512,7 +477,10 @@ function renderLists() {
         const totalEl = document.getElementById(type + '-total');
         if(!list) return;
         list.innerHTML = '';
-        const filtered = dbData.transactions.filter(t => t.type === type);
+        
+        // Filter only MY transactions for these lists
+        const filtered = dbData.transactions.filter(t => t.type === type && t.userId === currentUser.uid);
+        
         const total = filtered.reduce((acc, t) => acc + t.amount, 0);
         totalEl.innerText = total.toLocaleString() + ' MMK';
         if(filtered.length === 0) { list.innerHTML = '<p class="text-center text-gray-400 text-sm py-4">No records yet.</p>'; return; }
@@ -531,11 +499,14 @@ function renderLists() {
     });
 }
 
-function renderChart(inc, exp) {
+function renderChart(inc, exp, myTxs) {
     const ctx = document.getElementById('mainChart').getContext('2d');
     if(window.myChart) window.myChart.destroy();
     let labels = []; let dataPoints = []; let bgColors = [];
-    const expenseTxs = dbData.transactions.filter(t => t.type === 'expense');
+    
+    // Use only personal transactions
+    const safeTxs = myTxs || dbData.transactions.filter(t => t.userId === currentUser.uid);
+    const expenseTxs = safeTxs.filter(t => t.type === 'expense');
 
     if (expenseTxs.length > 0) {
         const catMap = {};
@@ -582,12 +553,7 @@ function renderCategoryScroll() {
             </div>`;
     });
 }
-
-function selectCategory(name) {
-    selCategory = name; renderCategoryScroll();
-    if(name === 'Other') document.getElementById('inp-desc').focus();
-}
-
+function selectCategory(name) { selCategory = name; renderCategoryScroll(); if(name === 'Other') document.getElementById('inp-desc').focus(); }
 function renderBankScroll() {
     const container = document.getElementById('bank-scroll');
     if(!container) return;
@@ -596,9 +562,7 @@ function renderBankScroll() {
         container.innerHTML += `<div onclick="selectBank('${b.name}', this)" class="flex flex-col items-center justify-center p-3 rounded-2xl bg-gray-50 border border-gray-100 cursor-pointer transition hover:bg-white hover:shadow-md ${selBank === b.name ? 'ring-2 ring-brand ring-offset-2 bg-white shadow-md' : ''}"><div class="w-8 h-8 rounded-full ${b.color} ${b.text} flex items-center justify-center text-xs mb-2"><i class="fa-solid ${b.icon}"></i></div><span class="text-[10px] font-bold text-gray-600 text-center leading-tight truncate w-full">${b.name}</span></div>`;
     });
 }
-
 function selectBank(name, el) { selBank = name; renderBankScroll(); }
-
 function setTxType(type) {
     txType = type;
     const bIn = document.getElementById('btn-tx-income');
@@ -614,13 +578,11 @@ function setTxType(type) {
         if(catSection) catSection.classList.add('hidden');
     }
 }
-
 function toggleGroupSelect() { 
     const isChecked = document.getElementById('inp-is-group').checked;
     const selectBox = document.getElementById('inp-group-select');
     isChecked ? selectBox.classList.remove('hidden') : selectBox.classList.add('hidden');
 }
-
 function openModal() {
     document.getElementById('tx-modal').classList.remove('hidden');
     renderBankScroll();
@@ -662,21 +624,14 @@ function openGroupDetail(id) {
     document.getElementById('group-detail-view').classList.remove('hidden');
     document.getElementById('detail-group-name').innerText = g.name;
     document.getElementById('detail-group-id').innerText = g.id.slice(0,6);
-    
-    // Header Delete & Edit Buttons (Owner Only)
     let btnContainer = document.querySelector('#group-detail-view .bg-brand');
     let existingDelBtn = document.getElementById('btn-delete-group');
     if(existingDelBtn) existingDelBtn.remove();
-
-    // Reset Buttons Visibility
     const renameBtn = document.getElementById('btn-rename-group');
     const budgetBtn = document.getElementById('btn-edit-group-budget');
-    
     if (currentUser.uid === g.ownerId) {
-        // Show Owner Controls
-        renameBtn.classList.remove('hidden');
-        budgetBtn.classList.remove('hidden');
-        
+        if(renameBtn) renameBtn.classList.remove('hidden');
+        if(budgetBtn) budgetBtn.classList.remove('hidden');
         let delBtn = document.createElement('button');
         delBtn.id = 'btn-delete-group';
         delBtn.className = "absolute top-4 right-4 bg-white/20 hover:bg-red-500 hover:text-white text-white p-2 rounded-lg backdrop-blur-md transition";
@@ -684,8 +639,8 @@ function openGroupDetail(id) {
         delBtn.onclick = (e) => { e.stopPropagation(); deleteGroup(id); };
         btnContainer.appendChild(delBtn);
     } else {
-        renameBtn.classList.add('hidden');
-        budgetBtn.classList.add('hidden');
+        if(renameBtn) renameBtn.classList.add('hidden');
+        if(budgetBtn) budgetBtn.classList.add('hidden');
     }
 
     const gInc = dbData.transactions.filter(t => t.groupId === id && t.type==='income').reduce((s,t)=>s+t.amount,0);
@@ -701,150 +656,108 @@ function openGroupDetail(id) {
         status.innerText = `${gExp.toLocaleString()} / ${limit.toLocaleString()}`;
         bar.style.width = pct + '%';
         bar.className = "h-full rounded-full transition-all ";
-        if(pct < 50) bar.classList.add('bg-green-500');
-        else if(pct < 80) bar.classList.add('bg-yellow-400');
-        else bar.classList.add('bg-red-500');
-    } else {
-        status.innerText = "No Limit";
-        bar.style.width = '0%';
-    }
+        if(pct < 50) bar.classList.add('bg-green-500'); else if(pct < 80) bar.classList.add('bg-yellow-400'); else bar.classList.add('bg-red-500');
+    } else { status.innerText = "No Limit"; bar.style.width = '0%'; }
 
     const txList = document.getElementById('detail-tx-list');
     txList.innerHTML = '';
     const groupTxs = dbData.transactions.filter(t => t.groupId === id);
     if(groupTxs.length === 0) txList.innerHTML = '<p class="text-xs text-center text-gray-400 py-4">No transactions yet.</p>';
+    groupTxs.sort((a,b) => new Date(b.date) - new Date(a.date));
+
     groupTxs.forEach(t => {
-        txList.innerHTML += `<div class="flex justify-between items-center p-3 border-b border-gray-50"><div><p class="text-xs font-bold text-gray-700">${t.desc}</p><p class="text-[10px] text-gray-400">Paid by You</p></div><div class="flex items-center gap-3"><span class="text-xs font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span><button onclick="deleteTx('${t.id}')" class="text-gray-300 hover:text-red-500 transition"><i class="fa-solid fa-trash text-xs"></i></button></div></div>`;
+        const isMe = t.userId === currentUser.uid;
+        
+        // --- ADDED: Show actual name if available, else "Member"
+        const payerText = isMe ? "Paid by You" : `Paid by ${t.userName || 'Member'}`;
+
+        console.log(payerText);
+
+        txList.innerHTML += `<div class="flex justify-between items-center p-3 border-b border-gray-50"><div><p class="text-xs font-bold text-gray-700">${t.desc}</p><p class="text-[10px] text-gray-400">${payerText}</p></div><div class="flex items-center gap-3"><span class="text-xs font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span>${isMe ? `<button onclick="deleteTx('${t.id}')" class="text-gray-300 hover:text-red-500 transition"><i class="fa-solid fa-trash text-xs"></i></button>` : ''}</div></div>`;
     });
     
-    // MEMBER LIST WITH REMOVE BUTTON
     const mList = document.getElementById('detail-member-list');
     mList.innerHTML = '';
     const members = g.members || [];
     members.forEach(m => { 
         let removeBtnHTML = '';
-        // Only owner can remove, and cannot remove self
         if (currentUser.uid === g.ownerId && m !== userProfile.name) {
             removeBtnHTML = `<button onclick="removeMember('${m}')" class="text-gray-300 hover:text-red-500 transition ml-auto"><i class="fa-solid fa-times"></i></button>`;
         }
-        
-        mList.innerHTML += `
-            <div class="p-3 bg-gray-50 rounded-xl flex items-center gap-3">
-                <div class="w-8 h-8 rounded-full bg-brand text-white flex items-center justify-center font-bold text-xs">${m[0] || 'U'}</div>
-                <span class="text-sm font-bold">${m}</span>
-                ${removeBtnHTML}
-            </div>`; 
+        mList.innerHTML += `<div class="p-3 bg-gray-50 rounded-xl flex items-center gap-3"><div class="w-8 h-8 rounded-full bg-brand text-white flex items-center justify-center font-bold text-xs">${m[0] || 'U'}</div><span class="text-sm font-bold">${m}</span>${removeBtnHTML}</div>`; 
     });
 }
-
-function closeGroupDetail() { 
-    document.getElementById('group-detail-view').classList.add('hidden');
-    document.getElementById('group-list-view').classList.remove('hidden');
-    renderGroupList(); 
-}
-
-// ------------------------------------
-// MEMBER VALIDATION LOGIC (FIXED)
-// ------------------------------------
+function closeGroupDetail() { document.getElementById('group-detail-view').classList.add('hidden'); document.getElementById('group-list-view').classList.remove('hidden'); renderGroupList(); }
 async function addMember() {
     const inputEl = document.getElementById('add-member-input');
     const inputVal = inputEl.value.trim();
-    
     if (!inputVal) { showAlert("Enter name or ID."); return; }
     if (!activeGroupId) { showAlert("No active group."); return; }
-
     try {
-        // 1. Check if user exists by Share ID
+        const currentGroup = dbData.groups.find(g => g.id === activeGroupId);
+        if (currentGroup && currentGroup.members.some(m => m.toLowerCase() === inputVal.toLowerCase())) { showAlert("User is already in group."); return; }
         const qId = query(collection(db, "users"), where("shareID", "==", inputVal));
         const snapId = await getDocs(qId);
-
         let foundUser = null;
-
-        if (!snapId.empty) {
-            foundUser = snapId.docs[0].data();
-        } else {
-            // 2. Fallback: Check if user exists by Name
+        if (!snapId.empty) { foundUser = snapId.docs[0].data(); } 
+        else {
             const qName = query(collection(db, "users"), where("fullname", "==", inputVal));
             const snapName = await getDocs(qName);
             if(!snapName.empty) foundUser = snapName.docs[0].data();
         }
-
         if (foundUser) {
             const groupRef = doc(db, "groups", activeGroupId);
             await updateDoc(groupRef, { members: arrayUnion(foundUser.fullname) });
             showSuccess(`Added ${foundUser.fullname}!`);
             inputEl.value = ''; 
-        } else {
-            // STRICT ALERT IF NOT FOUND
-            showAlert("User not found in database.");
-        }
-    } catch (e) {
-        console.error("Member Search Error:", e);
-        showAlert("Error searching user.");
-    }
+        } else { showAlert("User not found. Check ID/Name."); }
+    } catch (e) { console.error("Member Search Error:", e); showAlert("Error searching user."); }
 }
-
 async function removeMember(memberName) {
     if(!confirm(`Remove ${memberName} from group?`)) return;
     try {
         const groupRef = doc(db, "groups", activeGroupId);
         await updateDoc(groupRef, { members: arrayRemove(memberName) });
         showSuccess("Member Removed");
-    } catch (e) {
-        console.error(e);
-        showAlert("Failed to remove member.");
-    }
+    } catch (e) { console.error(e); showAlert("Failed to remove member."); }
 }
-// ------------------------------------
-
-function logout() { 
-    signOut(auth).then(() => {
-        showAlert("Logged out. Redirecting..."); 
-        setTimeout(()=> { window.location.href = "./index.html"; }, 1000); 
-    });
-}
-
+function logout() { signOut(auth).then(() => { showAlert("Logged out. Redirecting..."); setTimeout(()=> { window.location.href = "./index.html"; }, 1000); }); }
 function populateReportDropdowns() {
     const catSel = document.getElementById('filter-category');
     if(!catSel) return;
     catSel.innerHTML = '<option value="all">All Categories</option>';
-    categories.forEach(c => {
-        catSel.innerHTML += `<option value="${c.name}">${c.name}</option>`;
-    });
+    categories.forEach(c => { catSel.innerHTML += `<option value="${c.name}">${c.name}</option>`; });
 }
-
 function applyFilters() {
     const month = document.getElementById('filter-month').value;
     const cat = document.getElementById('filter-category').value;
     const type = document.getElementById('filter-type').value;
-
     const tbody = document.getElementById('report-table-body');
     tbody.innerHTML = '';
-
+    
+    // Filter only MY transactions for Reports too
     if(dbData.transactions && dbData.transactions.length > 0) {
         const filtered = dbData.transactions.filter(t => {
+            const isMine = t.userId === currentUser.uid;
             const txMonth = t.date ? t.date.split('-')[1] : null;
             const matchMonth = month === 'all' || (txMonth === month);
             const matchCat = cat === 'all' || t.category === cat;
             const matchType = type === 'all' || t.type === type;
-            return matchMonth && matchCat && matchType;
+            return isMine && matchMonth && matchCat && matchType;
         });
 
-        if(filtered.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="p-5 text-center text-gray-400 text-xs">No results match filters.</td></tr>';
-            return;
-        }
-
+        if(filtered.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="p-5 text-center text-gray-400 text-xs">No results match filters.</td></tr>'; return; }
         filtered.sort((a,b) => new Date(b.date) - new Date(a.date)).forEach(t => {
             tbody.innerHTML += `<tr class="hover:bg-gray-50 transition border-b border-gray-50 last:border-0"><td class="p-5 text-gray-500 text-xs">${t.date}</td><td class="p-5"><span class="px-2 py-1 rounded text-[10px] font-bold uppercase ${t.type==='income'?'bg-green-100 text-green-600':'bg-red-100 text-red-600'}">${t.type}</span></td><td class="p-5 font-bold text-gray-700">${t.desc} <span class="block text-[10px] text-gray-400 font-normal">${t.bank} • ${t.category||'General'}</span></td><td class="p-5 text-right font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</td></tr>`;
         });
     } else { tbody.innerHTML = '<tr><td colspan="4" class="p-5 text-center text-gray-400 text-xs">No transactions.</td></tr>'; }
 }
-
 function downloadCSV() {
-    if(!dbData.transactions || dbData.transactions.length === 0) { showAlert("No data."); return; }
+    // Download only MY data
+    const myTxs = dbData.transactions.filter(t => t.userId === currentUser.uid);
+    if(!myTxs || myTxs.length === 0) { showAlert("No data."); return; }
     let csv = "Date,Type,Category,Description,Bank,Group,Amount\n";
-    dbData.transactions.forEach(t => { csv += `${t.date},${t.type},${t.category || ''},${t.desc},${t.bank},${t.groupId||''},${t.amount}\n`; });
+    myTxs.forEach(t => { csv += `${t.date},${t.type},${t.category || ''},${t.desc},${t.bank},${t.groupId||''},${t.amount}\n`; });
     const link = document.createElement("a");
     link.href = "data:text/csv;charset=utf-8," + encodeURI(csv);
     link.download = "proket_data.csv";
