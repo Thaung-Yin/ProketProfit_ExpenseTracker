@@ -671,8 +671,6 @@ function openGroupDetail(id) {
         // --- ADDED: Show actual name if available, else "Member"
         const payerText = isMe ? "Paid by You" : `Paid by ${t.userName || 'Member'}`;
 
-        console.log(payerText);
-
         txList.innerHTML += `<div class="flex justify-between items-center p-3 border-b border-gray-50"><div><p class="text-xs font-bold text-gray-700">${t.desc}</p><p class="text-[10px] text-gray-400">${payerText}</p></div><div class="flex items-center gap-3"><span class="text-xs font-bold ${t.type==='income'?'text-green-600':'text-red-600'}">${t.amount.toLocaleString()}</span>${isMe ? `<button onclick="deleteTx('${t.id}')" class="text-gray-300 hover:text-red-500 transition"><i class="fa-solid fa-trash text-xs"></i></button>` : ''}</div></div>`;
     });
     
