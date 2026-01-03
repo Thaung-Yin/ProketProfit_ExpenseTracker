@@ -17,7 +17,7 @@ import { doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/12.6.0/f
 onAuthStateChanged(auth, (user) => {
     if (user) {
         // User is already logged in -> Go straight to dashboard
-        window.location.href = "./test.html";
+        window.location.href = "./home.html";
     }
 });
 
@@ -50,7 +50,7 @@ if (loginForm) {
             await signInWithEmailAndPassword(auth, email, password);
             // The onAuthStateChanged above will handle the redirect, 
             // but we keep this here just in case:
-            window.location.href = "./test.html";
+            window.location.href = "./home.html";
 
         } catch (error) {
             console.error("Login Error:", error);
@@ -90,7 +90,7 @@ if (googleBtn) {
                 });
             }
             // onAuthStateChanged will handle redirect
-            window.location.href = "./test.html";
+            window.location.href = "./home.html";
 
         } catch (error) {
             console.error("Google Login Error:", error);
